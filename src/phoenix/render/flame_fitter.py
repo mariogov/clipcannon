@@ -244,19 +244,40 @@ class FlameFitter:
                     # Map to 68 landmarks
                     lmk68 = lmk106[INSIGHT106_TO_68]  # (68, 2)
 
+                    # Filter bad frames: face must be sufficiently visible
+                    det_score = getattr(faces[0], "det_score", 1.0)
+                    if det_score < 0.5:
+                        skipped += 1
+                        frame_idx += 1
+                        continue
+
+                    # Check face orientation via landmark spread
+                    lmk_spread_x = lmk68[:, 0].max() - lmk68[:, 0].min()
+                    lmk_spread_y = lmk68[:, 1].max() - lmk68[:, 1].min()
+                    face_ratio = lmk_spread_x / max(lmk_spread_y, 1)
+                    if face_ratio < 0.3 or face_ratio > 3.0:
+                        # Face severely rotated or occluded
+                        skipped += 1
+                        frame_idx += 1
+                        continue
+
                     # Get face bounding box for crop
                     bbox = faces[0].bbox.astype(int)
-                    # Expand bbox by 30%
                     bw = bbox[2] - bbox[0]
                     bh = bbox[3] - bbox[1]
-                    cx = (bbox[0] + bbox[2]) // 2
-                    cy = (bbox[1] + bbox[3]) // 2
-                    half = int(max(bw, bh) * 0.65)
+                    # Center on face using landmark centroid (more stable than bbox)
+                    cx = int(lmk68[:, 0].mean())
+                    cy = int(lmk68[:, 1].mean())
+                    # Expand bbox by 80% (was 30%) to include full head + hair
+                    half = int(max(bw, bh) * 0.9)
                     x1 = max(0, cx - half)
                     y1 = max(0, cy - half)
                     x2 = min(frame.shape[1], cx + half)
                     y2 = min(frame.shape[0], cy + half)
                     crop = frame[y1:y2, x1:x2]
+
+                    # FIX: Convert BGR (OpenCV) to RGB for training
+                    crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
                     # Normalize landmarks to [-1, 1] relative to face center
                     # Use face bbox center and size for normalization
@@ -486,10 +507,9 @@ class FlameFitter:
         np.savez_compressed(str(output_path), **result)
         logger.info("Saved FLAME params to %s", output_path)
 
-        # Also save crops for training (sample every 4th to save space)
-        crops_path = output_path.parent / "face_crops.npz"
-        # Resize crops to consistent size for training
-        crop_size = 256
+        # Also save crops for training (already RGB from extraction)
+        crops_path = output_path.parent / "face_crops_512.npz"
+        crop_size = 512
         resized_crops = []
         for crop in crops:
             if crop.shape[0] > 0 and crop.shape[1] > 0:
@@ -498,7 +518,8 @@ class FlameFitter:
             else:
                 resized_crops.append(np.zeros((crop_size, crop_size, 3), dtype=np.uint8))
         np.savez_compressed(str(crops_path), crops=np.array(resized_crops))
-        logger.info("Saved %d face crops to %s", len(resized_crops), crops_path)
+        logger.info("Saved %d face crops (RGB, %dx%d) to %s",
+                     len(resized_crops), crop_size, crop_size, crops_path)
 
         return result
 

@@ -394,6 +394,7 @@ async def ingest_transcript(segments: list[dict], meeting_id: str) -> None:
 # ---------------------------------------------------------------------------
 _face_warper = None  # DEPRECATED: replaced by PhysicsFaceEngine
 _physics_face = None
+_semantic_model = None  # SemanticCloneModel for meaning-aware face control
 
 
 def init_face_warper():
@@ -432,6 +433,33 @@ def init_physics_face():
         logger.info("PhysicsFaceEngine ready (deterministic audio-to-face)")
     except Exception as e:
         logger.warning("PhysicsFaceEngine init failed: %s", e)
+
+
+def init_semantic_model():
+    """Initialize the SemanticCloneModel for meaning-aware face control.
+
+    Loads the trained model from disk. Falls back to PhysicsFaceEngine
+    if the semantic model is not available.
+    """
+    global _semantic_model
+    model_dir = Path("~/.clipcannon/models/santa/semantic_model").expanduser()
+    # Try best model first, then final
+    for fname in ["semantic_model_best.pt", "semantic_model_final.pt"]:
+        model_path = model_dir / fname
+        if model_path.exists():
+            try:
+                import torch
+                from phoenix.clone.semantic_model import SemanticCloneModel
+                checkpoint = torch.load(str(model_path), map_location="cuda", weights_only=False)
+                _semantic_model = SemanticCloneModel()
+                _semantic_model.load_state_dict(checkpoint["model_state"])
+                _semantic_model = _semantic_model.to("cuda").eval()
+                logger.info("SemanticCloneModel loaded from %s (%.1fM params)",
+                            model_path, _semantic_model.param_count / 1e6)
+                return
+            except Exception as e:
+                logger.warning("SemanticCloneModel load failed (%s): %s", fname, e)
+    logger.info("No semantic model found -- using PhysicsFaceEngine only")
 
 
 # ---------------------------------------------------------------------------
@@ -479,8 +507,9 @@ async def launch_browser():
     gpu_cleanup()
     log_gpu_state("tts")
 
-    # 4. Physics face engine + legacy face warper fallback
+    # 4. Physics face engine + semantic model + legacy face warper fallback
     init_physics_face()
+    init_semantic_model()
     init_face_warper()
     gpu_cleanup()
 
@@ -1205,14 +1234,78 @@ async def speak(page, text):
         del segs
 
         # Compute physics-based face animation and send to browser
+        # Pipeline: PhysicsFaceEngine -> (optional) SemanticCloneModel -> blendshapes
         if _physics_face is not None:
             try:
                 from phoenix.render.physics_face import PhysicsFaceEngine
                 _physics_face.reset()
                 face_states = _physics_face.process_audio_batch(audio)
-                # Build per-frame blendshape schedules for the render loop
-                blendshape_schedule = [s.to_blendshapes() for s in face_states]
-                # Also extract mouth-only schedule for backward compat
+
+                # If semantic model is available, enhance blendshapes
+                if _semantic_model is not None:
+                    try:
+                        import torch
+                        blendshape_schedule = []
+                        with torch.no_grad():
+                            for fs in face_states:
+                                # Build prosody input from PhysicsFaceEngine raw features
+                                pro = torch.zeros(1, 12, device="cuda")
+                                pro[0, 0] = fs._f0 / 300.0
+                                pro[0, 2] = fs._energy
+                                pro[0, 3] = 0.5  # default rate
+                                pro[0, 4] = 1.0 if fs.effort > 0.5 else 0.0
+
+                                # Emotion from energy/effort
+                                emo = torch.tensor([[
+                                    min(1.0, fs.effort),  # arousal proxy
+                                    0.5 + fs.lip_spread * 0.3,  # valence proxy
+                                    fs._energy * 10,  # energy
+                                ]], device="cuda")
+
+                                out = _semantic_model(
+                                    emotion=emo, prosody=pro,
+                                )
+                                bs_tensor = out["blendshapes"][0].cpu().numpy()
+                                bs_dict = {}
+                                # Map 52-dim tensor to ARKit names
+                                arkit_names = [
+                                    "jawOpen", "jawForward", "jawLeft", "jawRight",
+                                    "mouthSmileLeft", "mouthSmileRight", "mouthPucker",
+                                    "mouthFunnel", "mouthClose", "mouthStretchLeft",
+                                    "mouthStretchRight", "mouthUpperUpLeft",
+                                    "mouthUpperUpRight", "mouthLowerDownLeft",
+                                    "mouthLowerDownRight", "mouthShrugUpper",
+                                    "mouthShrugLower", "mouthRollUpper", "mouthRollLower",
+                                    "mouthPressLeft", "mouthPressRight",
+                                    "mouthDimpleLeft", "mouthDimpleRight",
+                                    "browInnerUp", "browDownLeft", "browDownRight",
+                                    "browOuterUpLeft", "browOuterUpRight",
+                                    "eyeBlinkLeft", "eyeBlinkRight",
+                                    "eyeWideLeft", "eyeWideRight",
+                                    "eyeSquintLeft", "eyeSquintRight",
+                                    "eyeLookUpLeft", "eyeLookUpRight",
+                                    "eyeLookDownLeft", "eyeLookDownRight",
+                                    "eyeLookInLeft", "eyeLookInRight",
+                                    "eyeLookOutLeft", "eyeLookOutRight",
+                                    "cheekPuff", "cheekSquintLeft", "cheekSquintRight",
+                                    "noseSneerLeft", "noseSneerRight",
+                                    "mouthFrownLeft", "mouthFrownRight",
+                                    "mouthLeft", "mouthRight", "tongueOut",
+                                ]
+                                for j, name in enumerate(arkit_names[:len(bs_tensor)]):
+                                    # Blend: 60% semantic, 40% physics for smooth result
+                                    physics_val = fs.to_blendshapes().get(name, 0.0)
+                                    bs_dict[name] = round(
+                                        0.6 * float(bs_tensor[j]) + 0.4 * physics_val, 3,
+                                    )
+                                blendshape_schedule.append(bs_dict)
+                        logger.info("SemanticModel: %d frames enhanced", len(blendshape_schedule))
+                    except Exception as e:
+                        logger.warning("Semantic model failed, using physics only: %s", e)
+                        blendshape_schedule = [s.to_blendshapes() for s in face_states]
+                else:
+                    blendshape_schedule = [s.to_blendshapes() for s in face_states]
+
                 mouth_schedule = [round(s.jaw_open, 2) for s in face_states]
                 logger.info("PhysicsFace: %d frames, jaw range %.2f-%.2f",
                             len(face_states),
