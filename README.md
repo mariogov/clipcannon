@@ -8,11 +8,11 @@
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL_1.1-orange.svg?style=flat-square)](LICENSE)
 [![MCP Protocol](https://img.shields.io/badge/MCP-compatible-purple.svg?style=flat-square)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/badge/tests-994_passing-brightgreen.svg?style=flat-square)](#testing)
-[![Tools](https://img.shields.io/badge/MCP_tools-55-orange.svg?style=flat-square)](#mcp-tools)
+[![Tools](https://img.shields.io/badge/MCP_tools-54-orange.svg?style=flat-square)](#mcp-tools)
 
 ---
 
-ClipCannon ingests a video, runs it through a **22-stage AI analysis pipeline**, and gives your AI assistant (Claude, etc.) the tools to edit, render, and publish platform-optimized clips -- with voice cloning, lip-sync avatars, real-time meeting bots, and AI-generated audio. No cloud APIs. Everything runs on your machine.
+ClipCannon ingests a video, runs it through a **23-stage AI analysis pipeline**, and gives your AI assistant (Claude, etc.) the tools to edit, render, and publish platform-optimized clips -- with voice cloning, lip-sync avatars, real-time meeting bots, and AI-generated audio. No cloud APIs. Everything runs on your machine.
 
 [Quick Start](#quick-start-5-minutes) &#8226; [Full Setup Guide](#full-setup-guide) &#8226; [Using ClipCannon](#using-clipcannon-with-claude) &#8226; [Features](#features) &#8226; [MCP Tools](#mcp-tools) &#8226; [Architecture](#architecture)
 
@@ -26,9 +26,19 @@ ClipCannon ingests a video, runs it through a **22-stage AI analysis pipeline**,
 
 ---
 
+## Watch the Demo
+
+> **97% speaker verification score.** That's how close ClipCannon's AI voice clone scored against the real voice on independent verification. Watch the full deepfake demo -- real voice cloning, lip-sync, and end-to-end video generation, all running locally on a single GPU.
+
+[![Watch the ClipCannon Demo on YouTube](https://img.shields.io/badge/Watch_Demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/kGyFK0HlP7Q)
+
+*23-stage analysis pipeline. Voice cloning at 97% SECS. Diffusion-based lip-sync. Fully automated. No cloud APIs. You own every frame.*
+
+---
+
 ## What is ClipCannon?
 
-ClipCannon is an MCP server that turns any AI assistant into a professional video editor + voice clone + meeting avatar. You give it a video file; it analyzes every frame, every word, every emotion, every speaker, every scene -- then exposes **55 tools** that let an AI assistant create edits, render platform-ready clips, generate music, clone voices, and even join Google Meet as a talking AI avatar.
+ClipCannon is an MCP server that turns any AI assistant into a professional video editor + voice clone + meeting avatar. You give it a video file; it analyzes every frame, every word, every emotion, every speaker, every scene -- then exposes **54 tools** that let an AI assistant create edits, render platform-ready clips, generate music, clone voices, and even join Google Meet as a talking AI avatar.
 
 **The core idea**: instead of scrubbing through hours of footage manually, let an AI understand the content through neural embeddings and structured analysis, then have a conversation about what to create.
 
@@ -350,7 +360,7 @@ It should:
 
 ## Features
 
-- **22-Stage Analysis Pipeline** -- Transcription, scene detection, emotion analysis, speaker diarization, narrative structure, beat tracking, OCR, quality scoring, and more. All running as a parallelized DAG.
+- **23-Stage Analysis Pipeline** -- Transcription, scene detection, emotion analysis, speaker diarization, narrative structure, prosody analysis, beat tracking, OCR, quality scoring, and more. All running as a parallelized DAG.
 - **5 Embedding Spaces** -- Visual (SigLIP 1152-dim), semantic (Nomic 768-dim), emotion (Wav2Vec2 1024-dim), speaker (WavLM 512-dim), and voice identity (ECAPA-TDNN 2048-dim) stored in sqlite-vec for KNN search.
 - **Smart Editing** -- Declarative EDL architecture with adaptive captions, face-tracking crop, split-screen, PIP, canvas compositing, motion effects, overlays, and iterative version control.
 - **7 Platform Profiles** -- One-click rendering for TikTok, Instagram Reels, YouTube Shorts, YouTube Standard, YouTube 4K, Facebook, and LinkedIn with NVENC GPU acceleration.
@@ -369,7 +379,7 @@ It should:
 
 ## MCP Tools
 
-55 tools organized into 12 categories:
+54 tools organized into 12 categories:
 
 | Category | Count | Key Tools |
 |----------|-------|-----------|
@@ -398,7 +408,7 @@ It should:
                              | MCP Protocol (stdio)
                     +--------v--------+
                     |  ClipCannon     |
-                    |  MCP Server     |  55 tools
+                    |  MCP Server     |  54 tools
                     +--------+--------+
                              |
           +------------------+------------------+
@@ -406,7 +416,7 @@ It should:
   +-------v------+  +-------v------+  +-------v-------+
   | Analysis     |  | Editing      |  | Voice/Avatar  |
   | Pipeline     |  | + Rendering  |  | Engine        |
-  | (22 stages)  |  | Engine       |  |               |
+  | (23 stages)  |  | Engine       |  |               |
   |              |  | (FFmpeg +    |  | Qwen3-TTS     |
   | SigLIP       |  |  NVENC)      |  | LatentSync    |
   | Nomic Embed  |  |              |  | Phoenix CuPy  |
@@ -470,7 +480,7 @@ Not currently supported. The pipeline depends heavily on CUDA, PyTorch CUDA, and
 Depends on video length and GPU:
 - 5-minute video on RTX 4090: ~2-3 minutes
 - 1-hour video on RTX 4090: ~15-20 minutes
-- The 22-stage DAG runs in parallel, so more GPU = faster
+- The 23-stage DAG runs in parallel, so more GPU = faster
 
 ### "Is my data sent anywhere?"
 
@@ -500,13 +510,13 @@ Auto-detects GPU precision: Blackwell (nvfp4), Ada Lovelace (int8), Ampere (int8
 ```
 src/
   clipcannon/           # Core video editing package
-    pipeline/           # 22-stage analysis DAG
+    pipeline/           # 23-stage analysis DAG
     editing/            # EDL engine, captions, smart crop
     rendering/          # FFmpeg rendering, 7 profiles
     audio/              # AI music, MIDI, SFX, mixing
     voice/              # Voice cloning + verification
     avatar/             # LatentSync lip-sync
-    tools/              # 55 MCP tool definitions
+    tools/              # 54 MCP tool definitions
     db/                 # SQLite + sqlite-vec
     gpu/                # Precision detection, model manager
     provenance/         # SHA-256 hash chain
