@@ -30,7 +30,7 @@ ClipCannon ingests a video, runs it through a **23-stage AI analysis pipeline**,
 
 > **97% speaker verification score.** That's how close ClipCannon's AI voice clone scored against the real voice on independent verification. Watch the full deepfake demo -- real voice cloning, lip-sync, and end-to-end video generation, all running locally on a single GPU.
 
-[![Watch the ClipCannon Demo on YouTube](https://img.shields.io/badge/Watch_Demo-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/kGyFK0HlP7Q)
+[![Watch the ClipCannon Demo on YouTube](https://img.youtube.com/vi/kGyFK0HlP7Q/maxresdefault.jpg)](https://youtu.be/kGyFK0HlP7Q)
 
 *23-stage analysis pipeline. Voice cloning at 97% SECS. Diffusion-based lip-sync. Fully automated. No cloud APIs. You own every frame.*
 
