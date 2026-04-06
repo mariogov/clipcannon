@@ -1,8 +1,8 @@
-"""Semantic Clone Model -- Constellation-Embedded Transformer.
+"""Semantic Clone Model -- Constellation-Embedded Transformer (7 modalities).
 
 Replaces the generic CloneModel with a meaning-aware architecture where:
 1. SPDs decode raw embeddings into human-interpretable semantic positions
-2. CMBs enforce cross-modal physics between modalities
+2. CMBs enforce cross-modal physics between all 7 modalities
 3. Constellation attention heads are INITIALIZED from the North Star states
 4. Each head's K/V matrices ARE constellation vectors
 5. Regularized to stay near constellation during training
@@ -10,13 +10,13 @@ Replaces the generic CloneModel with a meaning-aware architecture where:
 Output: 52 ARKit blendshapes + 16 voice params (same interface as CloneModel).
 
 Architecture:
-  Raw embeddings -> SPDs -> 4x32 semantic vectors
-                        -> CMB consistency check
-                        -> Concat (128-dim)
-                        -> Constellation Transformer (4 layers)
-                        -> Output heads
+  Raw embeddings -> 7 SPDs -> 7x32 semantic vectors
+                           -> CMB consistency check (21 bridges)
+                           -> Concat (224-dim)
+                           -> Constellation Transformer (4 layers)
+                           -> Output heads
 
-~2M params. Inference <1ms on RTX 5090.
+~3M params. Inference <1ms on RTX 5090.
 """
 from __future__ import annotations
 
@@ -32,8 +32,12 @@ from phoenix.clone.semantic_decoders import (
     EmotionSPD,
     ProsodySPD,
     SemanticSPD,
+    SpeakerSPD,
+    SentenceSPD,
+    VoiceSPD,
     SPDConfig,
     VisualSPD,
+    SEMANTIC_DIM,
 )
 from phoenix.clone.cross_modal_bridges import CrossModalBridgeSet
 
@@ -43,8 +47,22 @@ logger = logging.getLogger(__name__)
 BLENDSHAPE_DIM = 52
 VOICE_DIM = 16
 TOTAL_OUTPUT_DIM = BLENDSHAPE_DIM + VOICE_DIM
-SEMANTIC_DIM = 32
-FUSED_DIM = SEMANTIC_DIM * 4  # 128
+NUM_MODALITIES = 7
+FUSED_DIM = SEMANTIC_DIM * NUM_MODALITIES  # 224
+
+# Modality names in canonical order
+MODALITY_NAMES = ["visual", "emotion", "prosody", "semantic", "speaker", "sentence", "voice"]
+
+# Input dimensions for each modality (for error messages)
+MODALITY_INPUT_DIMS = {
+    "visual": 1152,
+    "emotion": 1024,
+    "prosody": 12,
+    "semantic": 768,
+    "speaker": 512,
+    "sentence": 384,
+    "voice": 192,
+}
 
 
 class ConstellationAttention(nn.Module):
@@ -55,7 +73,7 @@ class ConstellationAttention(nn.Module):
     regularized to stay nearby during training.
 
     Args:
-        dim: Model dimension.
+        dim: Model dimension (224 for 7 modalities).
         num_heads: Number of constellation heads.
         constellation_keys: (num_heads, dim) initial K vectors from constellation.
         constellation_values: (num_heads, dim) initial V vectors from constellation.
@@ -132,9 +150,11 @@ class ConstellationAttention(nn.Module):
 class SemanticCloneModel(nn.Module):
     """Meaning-aware clone model with constellation-embedded transformer.
 
-    Takes raw embeddings, decodes them through SPDs, enforces cross-modal
-    physics via CMBs, and produces blendshape + voice outputs through
-    a constellation-initialized transformer.
+    Takes raw embeddings from all 7 modalities, decodes them through SPDs,
+    enforces cross-modal physics via 21 CMBs, and produces blendshape + voice
+    outputs through a constellation-initialized transformer.
+
+    All 7 inputs are REQUIRED. Missing modalities raise ValueError.
 
     Args:
         num_constellation_heads: Attention heads per layer (from states).
@@ -151,18 +171,21 @@ class SemanticCloneModel(nn.Module):
         super().__init__()
         self.num_layers = num_layers
 
-        # Semantic Position Decoders
+        # Semantic Position Decoders -- all 7 modalities
         self.spd_visual = VisualSPD(spd_config)
         self.spd_emotion = EmotionSPD(spd_config)
         self.spd_prosody = ProsodySPD(spd_config)
         self.spd_semantic = SemanticSPD(spd_config)
+        self.spd_speaker = SpeakerSPD(spd_config)
+        self.spd_sentence = SentenceSPD(spd_config)
+        self.spd_voice = VoiceSPD(spd_config)
 
-        # Cross-Modal Bridges (frozen after Phase 2)
+        # Cross-Modal Bridges: 21 bidirectional pairs (frozen after Phase 2)
         self.cmbs = CrossModalBridgeSet()
 
-        # Fusion projection: 4x32 -> 128
+        # Fusion projection: 7x32=224 -> 224
         self.fusion = nn.Sequential(
-            nn.Linear(SEMANTIC_DIM * 4, FUSED_DIM),
+            nn.Linear(FUSED_DIM, FUSED_DIM),
             nn.LayerNorm(FUSED_DIM),
             nn.GELU(),
         )
@@ -198,8 +221,8 @@ class SemanticCloneModel(nn.Module):
         self._cmbs_frozen = False
 
         logger.info(
-            "SemanticCloneModel: %d layers, %d heads, %.2fM params",
-            num_layers, num_constellation_heads,
+            "SemanticCloneModel: %d layers, %d heads, %d modalities, fused=%dd, %.2fM params",
+            num_layers, num_constellation_heads, NUM_MODALITIES, FUSED_DIM,
             sum(p.numel() for p in self.parameters()) / 1e6,
         )
 
@@ -210,7 +233,7 @@ class SemanticCloneModel(nn.Module):
         """Initialize attention K/V from constellation state vectors.
 
         Args:
-            state_embeddings: Dict of state_name -> (128,) fused embedding.
+            state_embeddings: Dict of state_name -> (224,) fused embedding.
                 At most num_heads states will be used per layer.
         """
         states = list(state_embeddings.values())
@@ -225,7 +248,13 @@ class SemanticCloneModel(nn.Module):
             for h in range(nh):
                 idx = (start + h) % max(n_states, 1)
                 if idx < n_states:
-                    selected.append(torch.from_numpy(states[idx].astype(np.float32)))
+                    vec = torch.from_numpy(states[idx].astype(np.float32))
+                    # Pad or truncate to FUSED_DIM
+                    if vec.shape[0] < FUSED_DIM:
+                        vec = F.pad(vec, (0, FUSED_DIM - vec.shape[0]))
+                    else:
+                        vec = vec[:FUSED_DIM]
+                    selected.append(vec)
                 else:
                     selected.append(torch.randn(FUSED_DIM) * 0.01)
 
@@ -253,90 +282,105 @@ class SemanticCloneModel(nn.Module):
         self._cmbs_frozen = True
 
     def freeze_spds(self) -> None:
-        """Freeze SPDs after training."""
-        for spd in [self.spd_visual, self.spd_emotion, self.spd_prosody, self.spd_semantic]:
+        """Freeze all 7 SPDs after training."""
+        spds = [
+            self.spd_visual, self.spd_emotion, self.spd_prosody,
+            self.spd_semantic, self.spd_speaker, self.spd_sentence,
+            self.spd_voice,
+        ]
+        for spd in spds:
             for p in spd.parameters():
                 p.requires_grad_(False)
-        logger.info("SPDs frozen")
+        logger.info("All 7 SPDs frozen")
 
     def forward(
         self,
-        visual: torch.Tensor | None = None,
-        emotion: torch.Tensor | None = None,
-        prosody: torch.Tensor | None = None,
-        semantic: torch.Tensor | None = None,
+        visual: torch.Tensor,
+        emotion: torch.Tensor,
+        prosody: torch.Tensor,
+        semantic: torch.Tensor,
+        speaker: torch.Tensor,
+        sentence: torch.Tensor,
+        voice: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Forward pass: raw embeddings -> SPDs -> transformer -> outputs.
 
+        ALL 7 inputs are REQUIRED. No optional inputs, no fallbacks.
+
         Args:
             visual: (B, 1152) SigLIP visual embedding.
-            emotion: (B, 3) emotion arousal/valence/energy.
+            emotion: (B, 1024) Wav2Vec2 mean-pooled hidden state.
             prosody: (B, 12) prosody features.
             semantic: (B, 768) Nomic text embedding.
+            speaker: (B, 512) WavLM speaker embedding.
+            sentence: (B, 384) MiniLM sentence embedding.
+            voice: (B, 192) ECAPA voice embedding.
 
         Returns:
             Dict with 'blendshapes' (B, 52), 'voice' (B, 16),
             'spd_outputs' (dict of (B, 32) per modality).
+
+        Raises:
+            ValueError: If any input is None.
         """
-        device = self._get_device()
-        # Determine batch size from first available input
-        B = 1
-        for x in [visual, emotion, prosody, semantic]:
-            if x is not None:
-                B = x.shape[0]
-                break
+        # Validate all inputs present
+        inputs = {
+            "visual": visual, "emotion": emotion, "prosody": prosody,
+            "semantic": semantic, "speaker": speaker, "sentence": sentence,
+            "voice": voice,
+        }
+        for name, tensor in inputs.items():
+            if tensor is None:
+                raise ValueError(
+                    f"Missing required input '{name}'. All 7 modalities are required. "
+                    f"Expected shape: (B, {MODALITY_INPUT_DIMS[name]})"
+                )
 
-        # Decode through SPDs
-        spd_out = {}
-        if visual is not None:
-            spd_out["visual"] = self.spd_visual(visual)
-        else:
-            spd_out["visual"] = torch.zeros(B, SEMANTIC_DIM, device=device)
+        B = visual.shape[0]
 
-        if emotion is not None:
-            spd_out["emotion"] = self.spd_emotion(emotion)
-        else:
-            spd_out["emotion"] = torch.zeros(B, SEMANTIC_DIM, device=device)
+        # Decode through all 7 SPDs
+        spd_out = {
+            "visual": self.spd_visual(visual),
+            "emotion": self.spd_emotion(emotion),
+            "prosody": self.spd_prosody(prosody),
+            "semantic": self.spd_semantic(semantic),
+            "speaker": self.spd_speaker(speaker),
+            "sentence": self.spd_sentence(sentence),
+            "voice": self.spd_voice(voice),
+        }
 
-        if prosody is not None:
-            spd_out["prosody"] = self.spd_prosody(prosody)
-        else:
-            spd_out["prosody"] = torch.zeros(B, SEMANTIC_DIM, device=device)
-
-        if semantic is not None:
-            spd_out["semantic"] = self.spd_semantic(semantic)
-        else:
-            spd_out["semantic"] = torch.zeros(B, SEMANTIC_DIM, device=device)
-
-        # Fuse SPD outputs: concat -> project
+        # Fuse SPD outputs: concat all 7 -> 224d
         fused = torch.cat([
             spd_out["visual"],
             spd_out["emotion"],
             spd_out["prosody"],
             spd_out["semantic"],
-        ], dim=-1)  # (B, 128)
+            spd_out["speaker"],
+            spd_out["sentence"],
+            spd_out["voice"],
+        ], dim=-1)  # (B, 224)
 
-        fused = self.fusion(fused)  # (B, 128)
+        fused = self.fusion(fused)  # (B, 224)
 
         # Create token sequence: fused input + learnable latents
         tokens = torch.cat([
             fused.unsqueeze(1),
             self.latent_tokens.expand(B, -1, -1),
-        ], dim=1)  # (B, 17, 128)
+        ], dim=1)  # (B, 17, 224)
 
         # Constellation transformer
         for layer in self.constellation_layers:
             tokens = layer(tokens)
 
         # Pool -> output heads
-        pooled = tokens.mean(dim=1)  # (B, 128)
+        pooled = tokens.mean(dim=1)  # (B, 224)
 
         blendshapes = torch.sigmoid(self.head_blendshape(pooled))
-        voice = self.head_voice(pooled)
+        voice_out = self.head_voice(pooled)
 
         return {
             "blendshapes": blendshapes,
-            "voice": voice,
+            "voice": voice_out,
             "spd_outputs": spd_out,
             "_pooled": pooled,
         }

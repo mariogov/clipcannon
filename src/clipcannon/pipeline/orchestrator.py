@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+
+# Enforce offline-only mode — all ML models must be pre-cached.
+# If a model is missing, loading will raise immediately instead of
+# silently downloading multi-GB files at runtime.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path

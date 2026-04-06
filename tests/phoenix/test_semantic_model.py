@@ -1,8 +1,8 @@
-"""Tests for the Semantic Transformer Architecture.
+"""Tests for the Semantic Transformer Architecture (7 modalities).
 
 Tests:
-1. SPD outputs for known inputs
-2. CMB cross-modal consistency
+1. SPD outputs for known inputs (all 7 modalities)
+2. CMB cross-modal consistency (21 bridges)
 3. Constellation heads produce bounded outputs
 4. End-to-end: audio chunk -> semantic model -> blendshapes
 5. Benchmark: <5ms per frame
@@ -14,6 +14,35 @@ import time
 import numpy as np
 import pytest
 import torch
+
+
+# ---------------------------------------------------------------------------
+# Helper: generate all 7 inputs for the model
+# ---------------------------------------------------------------------------
+def _make_inputs(B: int, device: torch.device) -> dict[str, torch.Tensor]:
+    """Create all 7 required model inputs."""
+    return {
+        "visual": torch.randn(B, 1152, device=device),
+        "emotion": torch.randn(B, 1024, device=device),
+        "prosody": torch.randn(B, 12, device=device),
+        "semantic": torch.randn(B, 768, device=device),
+        "speaker": torch.randn(B, 512, device=device),
+        "sentence": torch.randn(B, 384, device=device),
+        "voice": torch.randn(B, 192, device=device),
+    }
+
+
+def _make_spd_outputs(B: int, device: torch.device) -> dict[str, torch.Tensor]:
+    """Create all 7 SPD outputs for bridge tests."""
+    return {
+        "visual": torch.rand(B, 32, device=device),
+        "emotion": torch.rand(B, 32, device=device),
+        "prosody": torch.rand(B, 32, device=device),
+        "semantic": torch.rand(B, 32, device=device),
+        "speaker": torch.rand(B, 32, device=device),
+        "sentence": torch.rand(B, 32, device=device),
+        "voice": torch.rand(B, 32, device=device),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -78,12 +107,12 @@ class TestSPDOutputs:
         assert out.max() <= 1.0
 
     def test_emotion_spd_output_shape(self, emotion_spd, device):
-        x = torch.randn(4, 3, device=device)
+        x = torch.randn(4, 1024, device=device)
         out = emotion_spd(x)
         assert out.shape == (4, 32)
 
     def test_emotion_spd_output_bounded(self, emotion_spd, device):
-        x = torch.randn(8, 3, device=device)
+        x = torch.randn(8, 1024, device=device)
         out = emotion_spd(x)
         assert out.min() >= 0.0
         assert out.max() <= 1.0
@@ -123,52 +152,94 @@ class TestSPDOutputs:
 
     def test_spd_different_inputs_different_outputs(self, emotion_spd, device):
         """Different emotion inputs should produce different outputs."""
-        x_happy = torch.tensor([[0.2, 0.8, 0.5]], device=device)
-        x_sad = torch.tensor([[0.1, 0.2, 0.3]], device=device)
+        x_happy = torch.randn(1, 1024, device=device)
+        x_sad = torch.randn(1, 1024, device=device) * 2.0
         out_happy = emotion_spd(x_happy)
         out_sad = emotion_spd(x_sad)
         # They should differ
         diff = (out_happy - out_sad).abs().sum()
         assert diff > 0.01
 
+    def test_speaker_spd_output_shape(self, device):
+        from phoenix.clone.semantic_decoders import SpeakerSPD
+        spd = SpeakerSPD().to(device).eval()
+        x = torch.randn(4, 512, device=device)
+        out = spd(x)
+        assert out.shape == (4, 32)
+
+    def test_speaker_spd_output_bounded(self, device):
+        from phoenix.clone.semantic_decoders import SpeakerSPD
+        spd = SpeakerSPD().to(device).eval()
+        x = torch.randn(8, 512, device=device)
+        out = spd(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_sentence_spd_output_shape(self, device):
+        from phoenix.clone.semantic_decoders import SentenceSPD
+        spd = SentenceSPD().to(device).eval()
+        x = torch.randn(4, 384, device=device)
+        out = spd(x)
+        assert out.shape == (4, 32)
+
+    def test_sentence_spd_output_bounded(self, device):
+        from phoenix.clone.semantic_decoders import SentenceSPD
+        spd = SentenceSPD().to(device).eval()
+        x = torch.randn(8, 384, device=device)
+        out = spd(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_voice_spd_output_shape(self, device):
+        from phoenix.clone.semantic_decoders import VoiceSPD
+        spd = VoiceSPD().to(device).eval()
+        x = torch.randn(4, 192, device=device)
+        out = spd(x)
+        assert out.shape == (4, 32)
+
+    def test_voice_spd_output_bounded(self, device):
+        from phoenix.clone.semantic_decoders import VoiceSPD
+        spd = VoiceSPD().to(device).eval()
+        x = torch.randn(8, 192, device=device)
+        out = spd(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
+    def test_speaker_spd_calibration(self, device):
+        from phoenix.clone.semantic_decoders import SpeakerSPD
+        spd = SpeakerSPD().to(device)
+        data = np.random.randn(100, 512).astype(np.float32)
+        spd.calibrate(data)
+        assert spd.input_mean.abs().sum() > 0
+        x = torch.from_numpy(data[:4]).to(device)
+        out = spd(x)
+        assert out.min() >= 0.0
+        assert out.max() <= 1.0
+
 
 # ---------------------------------------------------------------------------
-# 2. CMB cross-modal consistency
+# 2. CMB cross-modal consistency (21 bridges)
 # ---------------------------------------------------------------------------
 class TestCMBConsistency:
     """Test cross-modal bridges produce consistent outputs."""
 
     def test_bridge_set_forward(self, bridge_set, device):
-        spd_outputs = {
-            "visual": torch.rand(4, 32, device=device),
-            "emotion": torch.rand(4, 32, device=device),
-            "prosody": torch.rand(4, 32, device=device),
-            "semantic": torch.rand(4, 32, device=device),
-        }
+        spd_outputs = _make_spd_outputs(4, device)
         predictions = bridge_set(spd_outputs)
-        assert len(predictions) == 9  # 9 bridges
+        # 21 pairs x 2 directions = 42 bridges
+        assert len(predictions) == 42
         for name, pred in predictions.items():
             assert pred.shape == (4, 32)
 
     def test_bridge_output_bounded(self, bridge_set, device):
-        spd_outputs = {
-            "visual": torch.rand(8, 32, device=device),
-            "emotion": torch.rand(8, 32, device=device),
-            "prosody": torch.rand(8, 32, device=device),
-            "semantic": torch.rand(8, 32, device=device),
-        }
+        spd_outputs = _make_spd_outputs(8, device)
         predictions = bridge_set(spd_outputs)
         for name, pred in predictions.items():
             assert pred.min() >= 0.0
             assert pred.max() <= 1.0
 
     def test_consistency_loss_finite(self, bridge_set, device):
-        spd_outputs = {
-            "visual": torch.rand(8, 32, device=device),
-            "emotion": torch.rand(8, 32, device=device),
-            "prosody": torch.rand(8, 32, device=device),
-            "semantic": torch.rand(8, 32, device=device),
-        }
+        spd_outputs = _make_spd_outputs(8, device)
         loss = bridge_set.total_consistency_loss(spd_outputs)
         assert loss.isfinite()
         assert loss >= 0.0
@@ -183,18 +254,12 @@ class TestCMBConsistency:
         from phoenix.clone.cross_modal_bridges import CrossModalBridgeSet
 
         bs = CrossModalBridgeSet().to(device)
-        # Create correlated data (visual and emotion should align)
+        # Create correlated data (all modalities should partially align)
         N = 100
         base = torch.rand(N, 32, device=device)
-        spd = {
-            "visual": base + torch.randn(N, 32, device=device) * 0.1,
-            "emotion": base + torch.randn(N, 32, device=device) * 0.1,
-            "prosody": base + torch.randn(N, 32, device=device) * 0.1,
-            "semantic": base + torch.randn(N, 32, device=device) * 0.1,
-        }
-        # Clamp to [0,1]
-        for k in spd:
-            spd[k] = spd[k].clamp(0, 1)
+        spd = {}
+        for name in ["visual", "emotion", "prosody", "semantic", "speaker", "sentence", "voice"]:
+            spd[name] = (base + torch.randn(N, 32, device=device) * 0.1).clamp(0, 1)
 
         loss_before = bs.total_consistency_loss(spd).item()
 
@@ -208,45 +273,68 @@ class TestCMBConsistency:
         loss_after = bs.total_consistency_loss(spd).item()
         assert loss_after < loss_before
 
+    def test_bridge_count_is_42(self, bridge_set):
+        """21 pairs x 2 directions = 42 total bridges."""
+        assert len(bridge_set.bridges) == 42
+
+    def test_all_21_pairs_exist(self, bridge_set):
+        """Verify all C(7,2)=21 unique pairs have both directions."""
+        from phoenix.clone.cross_modal_bridges import MODALITY_NAMES
+        from itertools import combinations
+        for a, b in combinations(MODALITY_NAMES, 2):
+            assert f"{a}_to_{b}" in bridge_set.bridges, f"Missing {a}_to_{b}"
+            assert f"{b}_to_{a}" in bridge_set.bridges, f"Missing {b}_to_{a}"
+
 
 # ---------------------------------------------------------------------------
-# 3. Constellation heads produce bounded outputs
+# 3. Constellation heads produce bounded outputs (7 modalities)
 # ---------------------------------------------------------------------------
 class TestConstellationHeads:
     """Test constellation-initialized transformer produces bounded outputs."""
 
     def test_model_output_shape(self, semantic_model, device):
-        out = semantic_model(
-            visual=torch.randn(4, 1152, device=device),
-            emotion=torch.randn(4, 3, device=device),
-            prosody=torch.randn(4, 12, device=device),
-            semantic=torch.randn(4, 768, device=device),
-        )
+        out = semantic_model(**_make_inputs(4, device))
         assert out["blendshapes"].shape == (4, 52)
         assert out["voice"].shape == (4, 16)
 
     def test_blendshapes_bounded(self, semantic_model, device):
-        out = semantic_model(
-            visual=torch.randn(8, 1152, device=device),
-            emotion=torch.randn(8, 3, device=device),
-            prosody=torch.randn(8, 12, device=device),
-        )
+        out = semantic_model(**_make_inputs(8, device))
         bs = out["blendshapes"]
         assert bs.min() >= 0.0
         assert bs.max() <= 1.0
 
-    def test_partial_inputs(self, semantic_model, device):
-        """Model should work with only some modalities available."""
-        out = semantic_model(prosody=torch.randn(2, 12, device=device))
-        assert out["blendshapes"].shape == (2, 52)
+    def test_missing_input_raises_error(self, semantic_model, device):
+        """Model must raise ValueError if any modality is missing."""
+        inputs = _make_inputs(2, device)
+        # Remove one modality at a time and verify ValueError
+        for key in list(inputs.keys()):
+            bad_inputs = {k: v for k, v in inputs.items() if k != key}
+            with pytest.raises(TypeError):
+                semantic_model(**bad_inputs)
+
+    def test_none_input_raises_error(self, semantic_model, device):
+        """Passing None for any modality should raise ValueError."""
+        inputs = _make_inputs(2, device)
+        inputs["speaker"] = None
+        with pytest.raises(ValueError, match="Missing required input 'speaker'"):
+            semantic_model(**inputs)
 
     def test_constellation_init(self, semantic_model, device):
         """Test constellation initialization from state embeddings."""
         states = {
+            "happy": np.random.randn(224).astype(np.float32),
+            "sad": np.random.randn(224).astype(np.float32),
+            "neutral": np.random.randn(224).astype(np.float32),
+            "emphatic": np.random.randn(224).astype(np.float32),
+        }
+        semantic_model.init_constellation(states)
+        assert semantic_model._constellation_initialized
+
+    def test_constellation_init_pads_short_vectors(self, semantic_model, device):
+        """Constellation init should pad vectors shorter than FUSED_DIM."""
+        states = {
             "happy": np.random.randn(128).astype(np.float32),
             "sad": np.random.randn(128).astype(np.float32),
-            "neutral": np.random.randn(128).astype(np.float32),
-            "emphatic": np.random.randn(128).astype(np.float32),
         }
         semantic_model.init_constellation(states)
         assert semantic_model._constellation_initialized
@@ -257,21 +345,28 @@ class TestConstellationHeads:
         assert loss >= 0.0
 
     def test_spd_outputs_in_result(self, semantic_model, device):
-        out = semantic_model(
-            visual=torch.randn(2, 1152, device=device),
-            emotion=torch.randn(2, 3, device=device),
-        )
+        out = semantic_model(**_make_inputs(2, device))
         assert "spd_outputs" in out
-        assert "visual" in out["spd_outputs"]
-        assert out["spd_outputs"]["visual"].shape == (2, 32)
+        # All 7 modalities in spd_outputs
+        for name in ["visual", "emotion", "prosody", "semantic", "speaker", "sentence", "voice"]:
+            assert name in out["spd_outputs"]
+            assert out["spd_outputs"][name].shape == (2, 32)
 
     def test_freeze_spds(self, semantic_model):
         semantic_model.freeze_spds()
         for p in semantic_model.spd_visual.parameters():
             assert not p.requires_grad
+        for p in semantic_model.spd_speaker.parameters():
+            assert not p.requires_grad
+        for p in semantic_model.spd_voice.parameters():
+            assert not p.requires_grad
         # Transformer params should still be trainable
         for p in semantic_model.constellation_layers.parameters():
             assert p.requires_grad
+
+    def test_fused_dim_is_224(self):
+        from phoenix.clone.semantic_model import FUSED_DIM
+        assert FUSED_DIM == 224
 
 
 # ---------------------------------------------------------------------------
@@ -292,15 +387,24 @@ class TestEndToEnd:
         face_states = physics.process_audio_batch(audio)
         assert len(face_states) > 0
 
-        # Convert physics to model input
+        # Convert physics to model input (all 7 modalities required)
         for fs in face_states[:5]:
             pro = torch.zeros(1, 12, device=device)
             pro[0, 0] = fs._f0 / 300.0
             pro[0, 2] = fs._energy
-            emo = torch.tensor([[fs.effort, 0.5 + fs.lip_spread * 0.3, fs._energy]], device=device)
+            # Simulate all embeddings seeded from physics
+            emo = torch.randn(1, 1024, device=device) * fs._energy * 0.1
+            vis = torch.randn(1, 1152, device=device) * 0.1
+            sem = torch.randn(1, 768, device=device) * 0.1
+            spk = torch.randn(1, 512, device=device) * 0.1
+            sent = torch.randn(1, 384, device=device) * 0.1
+            voi = torch.randn(1, 192, device=device) * 0.1
 
             with torch.no_grad():
-                out = semantic_model(emotion=emo, prosody=pro)
+                out = semantic_model(
+                    visual=vis, emotion=emo, prosody=pro,
+                    semantic=sem, speaker=spk, sentence=sent, voice=voi,
+                )
             bs = out["blendshapes"]
             assert bs.shape == (1, 52)
             assert bs.min() >= 0.0
@@ -309,12 +413,7 @@ class TestEndToEnd:
     def test_batch_processing(self, semantic_model, device):
         """Test batch of frames processes correctly."""
         B = 16
-        out = semantic_model(
-            visual=torch.randn(B, 1152, device=device),
-            emotion=torch.randn(B, 3, device=device),
-            prosody=torch.randn(B, 12, device=device),
-            semantic=torch.randn(B, 768, device=device),
-        )
+        out = semantic_model(**_make_inputs(B, device))
         assert out["blendshapes"].shape == (B, 52)
         assert out["voice"].shape == (B, 16)
 
@@ -335,18 +434,16 @@ class TestBenchmark:
         # Warmup
         for _ in range(10):
             with torch.no_grad():
-                model(prosody=torch.randn(1, 12, device=device))
+                model(**_make_inputs(1, device))
 
         # Benchmark
         torch.cuda.synchronize()
         times = []
         for _ in range(100):
+            inputs = _make_inputs(1, device)
             t0 = time.perf_counter()
             with torch.no_grad():
-                out = model(
-                    emotion=torch.randn(1, 3, device=device),
-                    prosody=torch.randn(1, 12, device=device),
-                )
+                out = model(**inputs)
             torch.cuda.synchronize()
             times.append((time.perf_counter() - t0) * 1000)
 
@@ -366,17 +463,15 @@ class TestBenchmark:
         # Warmup
         for _ in range(5):
             with torch.no_grad():
-                model(prosody=torch.randn(B, 12, device=device))
+                model(**_make_inputs(B, device))
 
         torch.cuda.synchronize()
         times = []
         for _ in range(50):
+            inputs = _make_inputs(B, device)
             t0 = time.perf_counter()
             with torch.no_grad():
-                model(
-                    emotion=torch.randn(B, 3, device=device),
-                    prosody=torch.randn(B, 12, device=device),
-                )
+                model(**inputs)
             torch.cuda.synchronize()
             times.append((time.perf_counter() - t0) * 1000)
 
@@ -393,15 +488,16 @@ class TestLabelGeneration:
 
     def test_generate_emotion_labels(self):
         from phoenix.clone.semantic_decoders import generate_emotion_labels
-        emo_data = np.array([
-            [0.18, 0.507, 0.32],
-            [0.21, 0.508, 0.34],
-            [0.15, 0.504, 0.29],
-        ], dtype=np.float32)
+        emo_data = np.random.randn(3, 1024).astype(np.float32) * 0.1
         labels = generate_emotion_labels(emo_data)
         assert labels.shape == (3, 32)
         assert labels.min() >= 0.0
         assert labels.max() <= 1.0
+
+    def test_generate_emotion_labels_wrong_dim(self):
+        from phoenix.clone.semantic_decoders import generate_emotion_labels
+        with pytest.raises(ValueError, match="expects .* 1024"):
+            generate_emotion_labels(np.random.randn(3, 3).astype(np.float32))
 
     def test_generate_prosody_labels(self):
         from phoenix.clone.semantic_decoders import generate_prosody_labels
@@ -418,6 +514,45 @@ class TestLabelGeneration:
         assert labels.shape == (5, 32)
         assert labels.min() >= 0.0
         assert labels.max() <= 1.0
+
+    def test_generate_speaker_labels(self):
+        from phoenix.clone.semantic_decoders import generate_speaker_labels
+        spk_emb = np.random.randn(8, 512).astype(np.float32) * 0.1
+        labels = generate_speaker_labels(spk_emb)
+        assert labels.shape == (8, 32)
+        assert labels.min() >= 0.0
+        assert labels.max() <= 1.0
+
+    def test_generate_speaker_labels_wrong_dim(self):
+        from phoenix.clone.semantic_decoders import generate_speaker_labels
+        with pytest.raises(ValueError, match="expects .* 512"):
+            generate_speaker_labels(np.random.randn(3, 256).astype(np.float32))
+
+    def test_generate_sentence_labels(self):
+        from phoenix.clone.semantic_decoders import generate_sentence_labels
+        sent_emb = np.random.randn(6, 384).astype(np.float32) * 0.1
+        labels = generate_sentence_labels(sent_emb)
+        assert labels.shape == (6, 32)
+        assert labels.min() >= 0.0
+        assert labels.max() <= 1.0
+
+    def test_generate_sentence_labels_wrong_dim(self):
+        from phoenix.clone.semantic_decoders import generate_sentence_labels
+        with pytest.raises(ValueError, match="expects .* 384"):
+            generate_sentence_labels(np.random.randn(3, 768).astype(np.float32))
+
+    def test_generate_voice_labels(self):
+        from phoenix.clone.semantic_decoders import generate_voice_labels
+        voice_emb = np.random.randn(7, 192).astype(np.float32) * 0.1
+        labels = generate_voice_labels(voice_emb)
+        assert labels.shape == (7, 32)
+        assert labels.min() >= 0.0
+        assert labels.max() <= 1.0
+
+    def test_generate_voice_labels_wrong_dim(self):
+        from phoenix.clone.semantic_decoders import generate_voice_labels
+        with pytest.raises(ValueError, match="expects .* 192"):
+            generate_voice_labels(np.random.randn(3, 96).astype(np.float32))
 
 
 # ---------------------------------------------------------------------------
@@ -452,12 +587,7 @@ class TestTrainingSanity:
     def test_full_model_backward(self, semantic_model, device):
         """Verify gradients flow through the full model."""
         semantic_model.train()
-        out = semantic_model(
-            visual=torch.randn(4, 1152, device=device),
-            emotion=torch.randn(4, 3, device=device),
-            prosody=torch.randn(4, 12, device=device),
-            semantic=torch.randn(4, 768, device=device),
-        )
+        out = semantic_model(**_make_inputs(4, device))
         loss = out["blendshapes"].sum() + out["voice"].sum()
         loss.backward()
 

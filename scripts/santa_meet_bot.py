@@ -398,6 +398,14 @@ async def ingest_transcript(segments: list[dict], meeting_id: str) -> None:
 _face_warper = None  # DEPRECATED: replaced by PhysicsFaceEngine
 _physics_face = None
 _semantic_model = None  # SemanticCloneModel for meaning-aware face control
+# Cached mean embeddings for runtime — computed from training data on model load.
+# At runtime, prosody varies per-frame but identity embeddings stay constant.
+_semantic_vis_identity = None   # (1152,) mean SigLIP for Santa
+_semantic_emo_identity = None   # (1024,) mean Wav2Vec2 emotion for Santa
+_semantic_sem_identity = None   # (768,) mean Nomic semantic for Santa
+_semantic_spk_identity = None   # (512,) mean WavLM speaker for Santa
+_semantic_sent_identity = None  # (384,) mean MiniLM sentence for Santa
+_semantic_voice_identity = None # (192,) mean ECAPA voice for Santa
 
 
 def init_face_warper():
@@ -459,10 +467,34 @@ def init_semantic_model():
                 _semantic_model = _semantic_model.to("cuda").eval()
                 logger.info("SemanticCloneModel loaded from %s (%.1fM params)",
                             model_path, _semantic_model.param_count / 1e6)
+                # Load cached identity embeddings from training data
+                _load_identity_embeddings()
                 return
             except Exception as e:
                 logger.warning("SemanticCloneModel load failed (%s): %s", fname, e)
     logger.info("No semantic model found -- using PhysicsFaceEngine only")
+
+
+def _load_identity_embeddings() -> None:
+    """Load mean embeddings from training NPZ as runtime identity vectors."""
+    global _semantic_vis_identity, _semantic_emo_identity, _semantic_sem_identity
+    global _semantic_spk_identity, _semantic_sent_identity, _semantic_voice_identity
+    import torch
+    emb_path = Path("~/.clipcannon/models/santa/embeddings/all_embeddings.npz").expanduser()
+    if not emb_path.exists():
+        logger.error("Identity embeddings not found at %s", emb_path)
+        return
+    data = np.load(str(emb_path), allow_pickle=True)
+    _semantic_vis_identity = torch.from_numpy(data["vis_emb"].mean(axis=0)).float().cuda()
+    _semantic_emo_identity = torch.from_numpy(data["emo_emb"].mean(axis=0)).float().cuda()
+    _semantic_sem_identity = torch.from_numpy(data["sem_emb"].mean(axis=0)).float().cuda()
+    _semantic_spk_identity = torch.from_numpy(data["spk_emb"].mean(axis=0)).float().cuda()
+    _semantic_sent_identity = torch.from_numpy(data["sent_emb"].mean(axis=0)).float().cuda()
+    _semantic_voice_identity = torch.from_numpy(data["voice_emb"].mean(axis=0)).float().cuda()
+    logger.info("Loaded identity embeddings: vis=%d emo=%d sem=%d spk=%d sent=%d voice=%d",
+                _semantic_vis_identity.shape[0], _semantic_emo_identity.shape[0],
+                _semantic_sem_identity.shape[0], _semantic_spk_identity.shape[0],
+                _semantic_sent_identity.shape[0], _semantic_voice_identity.shape[0])
 
 
 # ---------------------------------------------------------------------------
@@ -1251,22 +1283,34 @@ async def speak(page, text):
                         blendshape_schedule = []
                         with torch.no_grad():
                             for fs in face_states:
-                                # Build prosody input from PhysicsFaceEngine raw features
+                                # Build all 7 modality inputs from PhysicsFaceEngine features.
+                                # At runtime we construct approximations from available audio data.
+                                # The model requires all 7 — no fallbacks.
                                 pro = torch.zeros(1, 12, device="cuda")
-                                pro[0, 0] = fs._f0 / 300.0
-                                pro[0, 2] = fs._energy
-                                pro[0, 3] = 0.5  # default rate
-                                pro[0, 4] = 1.0 if fs.effort > 0.5 else 0.0
+                                pro[0, 0] = fs._f0       # f0_mean (raw Hz)
+                                pro[0, 1] = fs._f0 * 0.2  # f0_range estimate
+                                pro[0, 2] = fs._energy * 100  # energy (raw scale)
+                                pro[0, 3] = 180.0         # speaking_rate WPM est
+                                pro[0, 4] = fs.effort * 300  # emphasis proxy (raw scale)
+                                pro[0, 5] = 0.03          # rising pitch default
 
-                                # Emotion from energy/effort
-                                emo = torch.tensor([[
-                                    min(1.0, fs.effort),  # arousal proxy
-                                    0.5 + fs.lip_spread * 0.3,  # valence proxy
-                                    fs._energy * 10,  # energy
-                                ]], device="cuda")
+                                # Emotion: 1024d Wav2Vec2 — use cached identity embedding
+                                emo = _semantic_emo_identity.unsqueeze(0)
+                                # Visual: 1152d SigLIP — use cached identity
+                                vis = _semantic_vis_identity.unsqueeze(0)
+                                # Semantic: 768d Nomic — use cached identity
+                                sem = _semantic_sem_identity.unsqueeze(0)
+                                # Speaker: 512d WavLM — use cached identity
+                                spk = _semantic_spk_identity.unsqueeze(0)
+                                # Sentence: 384d MiniLM — use cached identity
+                                sent = _semantic_sent_identity.unsqueeze(0)
+                                # Voice: 192d ECAPA — use cached identity
+                                voi = _semantic_voice_identity.unsqueeze(0)
 
                                 out = _semantic_model(
-                                    emotion=emo, prosody=pro,
+                                    visual=vis, emotion=emo, prosody=pro,
+                                    semantic=sem, speaker=spk, sentence=sent,
+                                    voice=voi,
                                 )
                                 bs_tensor = out["blendshapes"][0].cpu().numpy()
                                 bs_dict = {}
