@@ -339,7 +339,9 @@ class SemanticTrainer:
             avg_loss = epoch_loss / max(n_batches, 1)
             if avg_loss < best_loss:
                 best_loss = avg_loss
-                self._save_model("semantic_model_best.pt")
+                # Save checkpoint every 250 epochs or at end, not every improvement
+                if (epoch + 1) % 250 == 0 or epoch == cfg.transformer_epochs - 1:
+                    self._save_model("semantic_model_best.pt")
 
             if (epoch + 1) % log_interval == 0 or epoch == 0:
                 logger.info(

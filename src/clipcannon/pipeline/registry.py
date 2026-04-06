@@ -113,11 +113,11 @@ _STAGES: list[PipelineStage] = [
     ),
     PipelineStage(
         name="speaker_embed", operation="speaker_diarization", required=False,
-        depends_on=["audio_extract", "transcribe"], run=run_speaker_embed, timeout_s=300,
+        depends_on=["audio_extract", "transcribe"], run=run_speaker_embed, timeout_s=900,
     ),
     PipelineStage(
         name="emotion_embed", operation="emotion_analysis", required=False,
-        depends_on=["audio_extract"], run=run_emotion_embed, timeout_s=300,
+        depends_on=["audio_extract"], run=run_emotion_embed, timeout_s=600,
     ),
     PipelineStage(
         name="reactions", operation="reaction_detection", required=False,

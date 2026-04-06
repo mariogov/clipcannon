@@ -268,13 +268,16 @@ def _insert_results(
                 vec_inserted += 1
             except Exception as ve:
                 if vec_inserted == 0:
-                    logger.warning("vec_speakers insert failed: %s", ve)
+                    logger.error(
+                        "vec_speakers insert FAILED — %d embeddings LOST: %s",
+                        len(embeddings), ve,
+                    )
                     break
                 raise
         vec_conn.commit()
         counts["vec_speakers"] = vec_inserted
     except Exception as exc:
-        logger.warning("vec_speakers inserts failed: %s", exc)
+        logger.error("vec_speakers inserts FAILED — embeddings LOST: %s", exc)
         counts["vec_speakers"] = 0
     finally:
         vec_conn.close()

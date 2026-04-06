@@ -2,10 +2,9 @@
 
 Architecture:
   Audio Routing (zero feedback):
-    YOUR Chrome plays meeting audio -> PulseAudio output sink -> speakers
-    output.monitor captures your Chrome's audio -> parec -> Whisper -> LLM -> TTS
-    TTS -> pacat -> clone_audio sink -> clone_audio.monitor -> bot fake mic -> meeting
-    NO LOOPBACK. Bot TTS never reaches output.monitor. Feedback impossible.
+    Meeting participants' audio -> PulseAudio output sink -> output.monitor -> parec -> Whisper
+    Bot TTS -> JS AudioContext -> Chrome audio -> PULSE_SINK=bot_output (null sink, discarded)
+    Bot TTS NEVER reaches output.monitor. Whisper hears ONLY meeting participants.
 
   Intelligence (RAG):
     Question -> OCR Provenance search (past meetings) -> Ollama 14B -> response
@@ -70,7 +69,7 @@ _y4m_writer = None  # Reserved for future v4l2loopback approach
 
 # Audio capture settings
 CAPTURE_DEVICE = "output.monitor"
-AUDIO_SINK = "clone_audio"
+AUDIO_SINK = "bot_output"  # null sink — TTS discarded, never reaches output.monitor
 SAMPLE_RATE = 16000
 CHUNK_BYTES = 3200  # 100ms at 16kHz mono 16-bit
 
@@ -152,9 +151,13 @@ try:
 except Exception:
     pass
 
+# PulseAudio routing — bot's Chrome audio goes to bot_output (null sink / discarded)
+# so Whisper on output.monitor only hears meeting participants, not our TTS.
+os.environ["PULSE_SINK"] = "bot_output"
+
 # Remove ALL loopbacks — wrapped in try/except since PulseAudio TCP can timeout
 try:
-    subprocess.run(["pactl", "set-default-source", "clone_audio.monitor"],
+    subprocess.run(["pactl", "set-default-source", "output.monitor"],
                    capture_output=True, timeout=10)
     subprocess.run(["pactl", "set-default-sink", "output"],
                    capture_output=True, timeout=10)
@@ -1390,7 +1393,7 @@ async def main():
     print(f"  ASR: {WHISPER_MODEL}")
     print(f"  TTS: {VOICE_NAME} (Full ICL, real laugh clips)")
     print(f"  RAG: OCR Provenance ({OCR_PROVENANCE_URL})")
-    print("  Audio: parec output.monitor -> pacat clone_audio")
+    print("  Audio: parec output.monitor (meeting only) | TTS -> bot_output (null)")
     print("  NO loopback. Zero feedback. Full prosody.")
     print("=" * 60 + "\n")
 

@@ -344,30 +344,29 @@ def _insert_results(
             try:
                 vec_conn.execute(
                     "INSERT INTO vec_emotion "
-                    "(project_id, start_ms, end_ms, energy, arousal, "
-                    "emotion_embedding) VALUES (?, ?, ?, ?, ?, ?)",
+                    "(project_id, start_ms, end_ms, "
+                    "emotion_embedding) VALUES (?, ?, ?, ?)",
                     (
                         project_id,
                         int(r["start_ms"]),
                         int(r["end_ms"]),
-                        float(r["energy"]),
-                        float(r["arousal"]),
                         emb_bytes,
                     ),
                 )
                 vec_inserted += 1
             except Exception as vec_err:
                 if vec_inserted == 0:
-                    logger.warning(
-                        "vec_emotion insert failed (sqlite-vec may not be loaded): %s",
-                        vec_err,
+                    logger.error(
+                        "vec_emotion insert FAILED — %d embeddings LOST. "
+                        "sqlite-vec may not be loaded: %s",
+                        len(results), vec_err,
                     )
                     break
                 raise
         vec_conn.commit()
         counts["vec_emotion"] = vec_inserted
     except Exception as exc:
-        logger.warning("vec_emotion inserts failed: %s", exc)
+        logger.error("vec_emotion inserts FAILED — embeddings LOST: %s", exc)
         counts["vec_emotion"] = 0
     finally:
         vec_conn.close()
