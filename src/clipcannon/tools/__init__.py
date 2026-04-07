@@ -74,6 +74,12 @@ from clipcannon.tools.voice import (
 from clipcannon.tools.voice_defs import (
     VOICE_TOOL_DEFINITIONS,
 )
+from clipcannon.tools.constellation import (
+    dispatch_constellation_tool,
+)
+from clipcannon.tools.constellation_defs import (
+    CONSTELLATION_TOOL_DEFINITIONS,
+)
 
 # ---------------------------------------------------------------
 # Understanding tool definitions (4 tools)
@@ -247,6 +253,8 @@ for _defs, _dispatch in [
     (VOICE_TOOL_DEFINITIONS, dispatch_voice_tool),
     (AVATAR_TOOL_DEFINITIONS, dispatch_avatar_tool),
     (GENERATE_TOOL_DEFINITIONS, dispatch_generate_tool),
+    # Phase 4: Clone constellation
+    (CONSTELLATION_TOOL_DEFINITIONS, dispatch_constellation_tool),
 ]:
     for _tool_def in _defs:
         TOOL_DISPATCHERS[_tool_def.name] = _dispatch
@@ -268,6 +276,8 @@ ALL_TOOL_DEFINITIONS = (
     + VOICE_TOOL_DEFINITIONS
     + AVATAR_TOOL_DEFINITIONS
     + GENERATE_TOOL_DEFINITIONS
+    # Phase 4
+    + CONSTELLATION_TOOL_DEFINITIONS
 )
 
 __all__ = [
@@ -282,6 +292,8 @@ __all__ = [
     "TOOL_DISPATCHERS",
     "UNDERSTANDING_TOOL_DEFINITIONS",
     "VOICE_TOOL_DEFINITIONS",
+    "CONSTELLATION_TOOL_DEFINITIONS",
+    "dispatch_constellation_tool",
     "dispatch_audio_tool",
     "dispatch_avatar_tool",
     "dispatch_billing_tool",
