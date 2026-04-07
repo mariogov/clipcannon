@@ -77,11 +77,11 @@ async def _handle_list_skills(arguments: dict) -> dict:
         result = []
         for name in skills:
             skill = library.get_skill(name)
-            prompt = library.skill_to_prompt(skill)
+            prompt = library.skill_to_prompt(name)
             result.append({
                 "name": name,
                 "prompt": prompt[:100],
-                "phases": len(skill.phases),
+                "phases": len(skill.phases) if hasattr(skill, 'phases') else 0,
             })
         return {"person": person, "skills": result, "count": len(result)}
     except Exception as e:
