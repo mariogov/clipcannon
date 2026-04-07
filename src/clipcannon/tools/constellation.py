@@ -35,11 +35,15 @@ def _get_skill_library(person: str):
     from phoenix.video.expression_skills import SkillLibrary
 
     flame_path = str(FLAME_PATH).format(person=person)
+    embeddings_path = str(Path.home() / ".clipcannon" / "models" / person / "embeddings" / "all_embeddings.npz")
+
     if not Path(flame_path).exists():
         raise FileNotFoundError(f"FLAME params not found for '{person}' at {flame_path}")
+    if not Path(embeddings_path).exists():
+        raise FileNotFoundError(f"Embeddings not found for '{person}' at {embeddings_path}")
 
     library = SkillLibrary()
-    library.extract_from_training_data(flame_path)
+    library.extract_from_training_data(embeddings_path, flame_path)
     _skill_library_cache[person] = library
     return library
 
@@ -52,11 +56,13 @@ async def _handle_list_constellations(arguments: dict) -> dict:
         result = []
         for name in constellations:
             c = library.get_constellation(name)
+            # skill_sequence can be strings or ExpressionSkill objects
+            skills = [s if isinstance(s, str) else s.name for s in c.skill_sequence]
             result.append({
                 "name": name,
                 "emotion": c.emotion,
                 "description": c.description,
-                "skills": [s.name for s in c.skill_sequence],
+                "skills": skills,
             })
         return {"person": person, "constellations": result, "count": len(result)}
     except Exception as e:
@@ -236,7 +242,7 @@ async def dispatch_constellation_tool(name: str, arguments: dict) -> dict:
     handlers = {
         "clipcannon_list_constellations": _handle_list_constellations,
         "clipcannon_list_skills": _handle_list_skills,
-        "clipcannon_generate_video": _handle_generate_video,
+        "clipcannon_clone_video": _handle_generate_video,
         "clipcannon_expression_sequence": _handle_expression_sequence,
     }
     handler = handlers.get(name)
