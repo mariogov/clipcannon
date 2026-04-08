@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Curated training data pipeline for EchoMimicV3 LoRA training.
+"""Curated training data pipeline for EchoMimicV3 LoRA v4 video clip training.
 
 Uses ClipCannon's 23-stage analysis labels to create high-quality, categorized
 training clips that distinguish speaking from breathing, filter out crying
 segments, and include emotion-specific prompts.
 
-This replaces the old approach of 194 random 6-second clips which caused:
-  1. Lips moving during silence/breathing
-  2. Quality degradation over longer sequences
-  3. Eye glaze from training on crying segments
+v4 KEY CHANGE: Extracts 2-second VIDEO CLIPS (49 frames at 25fps) instead of
+single frames. The model will learn HOW the mouth moves over time, not just
+what the face looks like in a frozen moment.
 
 Categories:
   - SPEAKING:   High energy + transcript = active mouth movement
@@ -51,13 +50,18 @@ VOCALS_WAV = Path(os.path.expanduser(
     "~/.clipcannon/projects/proj_2ea7221d/stems/vocals.wav"
 ))
 OUTPUT_DIR = Path(os.path.expanduser(
-    "~/echomimic_v3/datasets/santa_curated"
+    "~/echomimic_v3/datasets/santa_curated_v5"
 ))
 
-CLIP_DURATION_S = 6.0
+# v4: 2-second clips = 49 frames at 25fps. This matches EchoMimicV3's temporal
+# compression ratio (49 pixel frames → 13 latent frames). The model learns
+# temporal mouth movement patterns over these 2 seconds.
+CLIP_DURATION_S = 2.0
 CLIP_DURATION_MS = int(CLIP_DURATION_S * 1000)
+VIDEO_FPS = 25
+VIDEO_FRAMES = 49  # 2s * 25fps - 1 + 1 for alignment
 TARGET_SR = 16000
-IMG_WIDTH = 720
+IMG_WIDTH = 480
 IMG_HEIGHT = 480
 
 # Crying segment exclusion range (seconds)
@@ -114,6 +118,7 @@ class ClipLabel:
     prompt: str = ""
     has_transcript: bool = False
     in_crying_range: bool = False
+    words: list = field(default_factory=list)
 
 
 def load_analysis_data(db_path: Path, project_id: str) -> dict:
@@ -176,6 +181,30 @@ def load_analysis_data(db_path: Path, project_id: str) -> dict:
     ).fetchall()
     data["silence_gaps"] = [dict(r) for r in rows]
     log.info("Loaded %d silence gaps", len(data["silence_gaps"]))
+
+    # Scene map with face positions for face-centered cropping
+    rows = conn.execute(
+        """SELECT start_ms, end_ms, face_x, face_y, face_w, face_h,
+                  webcam_x, webcam_y, webcam_w, webcam_h
+           FROM scene_map WHERE project_id=? AND face_w > 0
+           ORDER BY start_ms""",
+        (project_id,),
+    ).fetchall()
+    data["scene_map"] = [dict(r) for r in rows]
+    log.info("Loaded %d scene_map entries with face data", len(data["scene_map"]))
+
+    # Word-level timestamps for viseme/phoneme alignment
+    rows = conn.execute(
+        """SELECT w.word_id, w.word, w.start_ms, w.end_ms, w.confidence,
+                  w.speaker_id, s.text as segment_text
+           FROM transcript_words w
+           JOIN transcript_segments s ON w.segment_id = s.segment_id
+           WHERE s.project_id=?
+           ORDER BY w.start_ms""",
+        (project_id,),
+    ).fetchall()
+    data["words"] = [dict(r) for r in rows]
+    log.info("Loaded %d transcript words", len(data["words"]))
 
     conn.close()
     return data
@@ -270,10 +299,10 @@ def compute_energy_percentiles(prosody: list) -> dict:
     }
 
 
-def build_clip_windows(video_duration_ms: int, step_ms: int = 2000) -> list:
-    """Generate overlapping 6-second windows across the video.
+def build_clip_windows(video_duration_ms: int, step_ms: int = 1000) -> list:
+    """Generate overlapping 2-second windows across the video.
 
-    Uses 2-second step for denser coverage, giving more candidates
+    Uses 1-second step for dense coverage of 2s clips, giving many candidates
     for the diversity selection pass.
     """
     windows = []
@@ -457,12 +486,10 @@ def select_clips(data: dict) -> list:
                     in_crying_range=False,
                 )
                 clips["breathing"].append(label)
-        elif gap_dur >= 2000:
-            # Gap is 2-6 seconds: center a 6-second clip on the gap.
-            # The clip extends into speech edges but the gap center
+        elif gap_dur >= 1500:
+            # Gap is 1.5-2 seconds: center a 2-second clip on the gap.
+            # The clip may extend into speech edges but the gap center
             # teaches the model that low-energy = lips closed.
-            # Even a 2-second silence in the middle of a 6-second clip
-            # provides the critical "silence = closed mouth" signal.
             gap_center = (gap_start + gap_end) // 2
             clip_start = max(0, gap_center - CLIP_DURATION_MS // 2)
             clip_end = clip_start + CLIP_DURATION_MS
@@ -589,19 +616,96 @@ def select_diverse_subset(clips: list, target_count: int,
     return sorted(selected, key=lambda c: c.start_ms)
 
 
+def get_face_crop_for_time(start_ms: int, end_ms: int, scene_map: list,
+                           src_w: int = 2560, src_h: int = 1440,
+                           face_scale: float = 2.2) -> Optional[tuple]:
+    """Get a face-centered square crop region from scene_map data.
+
+    Returns (crop_x, crop_y, crop_size) or None if no face found.
+    The crop is a square centered on the face with `face_scale`x the face
+    size for head+shoulders context, then scaled to target resolution.
+    """
+    # Find scene_map entries overlapping this time range
+    best_face = None
+    for scene in scene_map:
+        overlap = min(end_ms, scene["end_ms"]) - max(start_ms, scene["start_ms"])
+        if overlap > 0 and scene.get("face_w", 0) > 0:
+            # Prefer larger faces (closer shots)
+            if best_face is None or scene["face_w"] > best_face["face_w"]:
+                best_face = scene
+
+    if best_face is None:
+        return None
+
+    fx = best_face["face_x"]
+    fy = best_face["face_y"]
+    fw = best_face["face_w"]
+    fh = best_face["face_h"]
+    cx = fx + fw // 2
+    cy = fy + fh // 2
+
+    # Square crop: face_scale * face size, clamped to source
+    crop_sz = min(int(max(fw, fh) * face_scale), src_h, src_w)
+    x1 = max(0, cx - crop_sz // 2)
+    y1 = max(0, cy - crop_sz // 2)
+    x1 = min(x1, src_w - crop_sz)
+    y1 = min(y1, src_h - crop_sz)
+
+    return (x1, y1, crop_sz)
+
+
 def extract_frame(video_path: Path, time_s: float, output_path: Path,
-                  width: int = IMG_WIDTH, height: int = IMG_HEIGHT) -> bool:
-    """Extract a single frame from video at the given timestamp."""
+                  width: int = IMG_WIDTH, height: int = IMG_HEIGHT,
+                  crop: Optional[tuple] = None) -> bool:
+    """Extract a single frame, optionally with face-centered crop."""
+    if crop:
+        cx, cy, csz = crop
+        vf = f"crop={csz}:{csz}:{cx}:{cy},scale={width}:{height}"
+    else:
+        vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+              f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
     cmd = [
         "ffmpeg", "-y", "-ss", f"{time_s:.3f}",
         "-i", str(video_path),
         "-vframes", "1",
-        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+        "-vf", vf,
         "-q:v", "2",
         str(output_path),
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=30)
+    return result.returncode == 0
+
+
+def extract_video_clip(video_path: Path, start_s: float, duration_s: float,
+                       output_path: Path, fps: int = VIDEO_FPS,
+                       width: int = IMG_WIDTH, height: int = IMG_HEIGHT,
+                       crop: Optional[tuple] = None) -> bool:
+    """Extract a short video clip with face-centered crop.
+
+    Produces exactly `duration_s * fps` frames for VAE encoding.
+    Uses face crop to eliminate black bars and maximize face detail.
+    """
+    if crop:
+        cx, cy, csz = crop
+        vf = f"fps={fps},crop={csz}:{csz}:{cx}:{cy},scale={width}:{height}"
+    else:
+        vf = (f"fps={fps},"
+              f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+              f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start_s:.3f}",
+        "-t", f"{duration_s:.3f}",
+        "-i", str(video_path),
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-crf", "15",
+        "-preset", "fast",
+        "-an",
+        "-pix_fmt", "yuv420p",
+        str(output_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=60)
     return result.returncode == 0
 
 
@@ -620,6 +724,23 @@ def extract_audio_clip(vocals_path: Path, start_s: float, duration_s: float,
     ]
     result = subprocess.run(cmd, capture_output=True, timeout=30)
     return result.returncode == 0
+
+
+def get_words_in_range(words: list, start_ms: int, end_ms: int,
+                       santa_id: Optional[int] = None) -> list:
+    """Get word-level transcript data for a time range."""
+    result = []
+    for w in words:
+        if santa_id is not None and w.get("speaker_id") != santa_id:
+            continue
+        if w["start_ms"] >= start_ms and w["end_ms"] <= end_ms:
+            result.append({
+                "word": w["word"],
+                "start_ms": w["start_ms"] - start_ms,  # relative to clip start
+                "end_ms": w["end_ms"] - start_ms,
+                "confidence": w.get("confidence", 0.0),
+            })
+    return result
 
 
 def build_prompt(category: str, emotion_label: str = "") -> str:
@@ -658,7 +779,8 @@ def curate_training_data():
     all_clips = select_clips(data)
 
     # 3. Select diverse subsets per category
-    targets = {"speaking": 100, "breathing": 30, "emotional": 30, "clear_eyes": 30}
+    # v4: higher targets — 2s clips give 3x more coverage than 6s clips
+    targets = {"speaking": 150, "breathing": 50, "emotional": 50, "clear_eyes": 50}
     final_clips = []
 
     for category, target in targets.items():
@@ -681,37 +803,70 @@ def curate_training_data():
 
     # 4. Create output directories
     dirs = {
-        "imgs": OUTPUT_DIR / "imgs",
-        "audios": OUTPUT_DIR / "audios",
+        "clips": OUTPUT_DIR / "clips",     # v4: 2-second video clips
+        "imgs": OUTPUT_DIR / "imgs",       # reference frames (first frame)
+        "audios": OUTPUT_DIR / "audios",   # 2-second audio clips
         "prompts": OUTPUT_DIR / "prompts",
     }
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
 
-    # 5. Extract media for each clip
-    log.info("Extracting frames and audio...")
+    # Get word-level data and Santa's speaker ID for per-clip words
+    santa_id = identify_santa_speaker(data)
+    scene_map = data.get("scene_map", [])
+
+    # 5. Extract media for each clip with FACE-CENTERED CROP
+    # This eliminates black bars and maximizes face detail.
+    log.info("Extracting video clips with face-centered crop...")
     success_count = 0
     fail_count = 0
+    no_face_count = 0
 
     for clip in final_clips:
         clip_id = clip.clip_id
         start_s = clip.start_ms / 1000.0
 
-        # Extract reference frame (first frame of clip)
-        img_path = dirs["imgs"] / f"{clip_id}.jpg"
-        if not extract_frame(SOURCE_VIDEO, start_s, img_path):
-            log.warning("Failed to extract frame for clip %s at %.1fs",
+        # Get face-centered crop region from scene_map
+        crop = get_face_crop_for_time(clip.start_ms, clip.end_ms, scene_map)
+        if crop is None:
+            no_face_count += 1
+            # Fallback: use median face position from all scenes
+            if scene_map:
+                med_fx = int(np.median([s["face_x"] for s in scene_map]))
+                med_fy = int(np.median([s["face_y"] for s in scene_map]))
+                med_fw = int(np.median([s["face_w"] for s in scene_map]))
+                med_fh = int(np.median([s["face_h"] for s in scene_map]))
+                cx = med_fx + med_fw // 2
+                cy = med_fy + med_fh // 2
+                crop_sz = min(int(max(med_fw, med_fh) * 2.2), 1440)
+                x1 = max(0, min(cx - crop_sz // 2, 2560 - crop_sz))
+                y1 = max(0, min(cy - crop_sz // 2, 1440 - crop_sz))
+                crop = (x1, y1, crop_sz)
+
+        # Extract 2-second video clip with face crop (49 frames at 25fps)
+        clip_path = dirs["clips"] / f"{clip_id}.mp4"
+        if not extract_video_clip(SOURCE_VIDEO, start_s, CLIP_DURATION_S,
+                                  clip_path, crop=crop):
+            log.warning("Failed to extract video clip %s at %.1fs",
                         clip_id, start_s)
             fail_count += 1
             continue
 
-        # Extract audio clip from vocals
+        # Extract reference frame (first frame) with same crop
+        img_path = dirs["imgs"] / f"{clip_id}.jpg"
+        if not extract_frame(SOURCE_VIDEO, start_s, img_path, crop=crop):
+            log.warning("Failed to extract frame for clip %s at %.1fs",
+                        clip_id, start_s)
+            clip_path.unlink(missing_ok=True)
+            fail_count += 1
+            continue
+
+        # Extract audio clip from vocals (2 seconds)
         audio_path = dirs["audios"] / f"{clip_id}.wav"
         if not extract_audio_clip(VOCALS_WAV, start_s, CLIP_DURATION_S, audio_path):
             log.warning("Failed to extract audio for clip %s", clip_id)
-            # Clean up frame if audio failed
-            if img_path.exists():
-                img_path.unlink()
+            clip_path.unlink(missing_ok=True)
+            img_path.unlink(missing_ok=True)
             fail_count += 1
             continue
 
@@ -719,17 +874,25 @@ def curate_training_data():
         prompt_path = dirs["prompts"] / f"{clip_id}.txt"
         prompt_path.write_text(clip.prompt, encoding="utf-8")
 
+        # Attach word-level data to clip for labels.json
+        clip.words = get_words_in_range(
+            data["words"], clip.start_ms, clip.end_ms, santa_id
+        )
+
         success_count += 1
         if (success_count) % 20 == 0:
             log.info("  Extracted %d/%d clips...", success_count, len(final_clips))
+
+    if no_face_count > 0:
+        log.info("  Used fallback crop for %d clips (no face in scene_map)", no_face_count)
 
     log.info("Extraction complete: %d success, %d failed", success_count, fail_count)
 
     # 6. Save labels.json
     labels = []
     for clip in final_clips:
-        img_path = dirs["imgs"] / f"{clip.clip_id}.jpg"
-        if not img_path.exists():
+        clip_path = dirs["clips"] / f"{clip.clip_id}.mp4"
+        if not clip_path.exists():
             continue
         labels.append({
             "clip_id": clip.clip_id,
@@ -738,6 +901,9 @@ def curate_training_data():
             "end_ms": clip.end_ms,
             "start_s": clip.start_ms / 1000.0,
             "end_s": clip.end_ms / 1000.0,
+            "duration_s": CLIP_DURATION_S,
+            "video_frames": VIDEO_FRAMES,
+            "video_fps": VIDEO_FPS,
             "energy_mean": round(clip.energy_mean, 6),
             "speaking_rate_wpm": round(clip.speaking_rate_wpm, 1),
             "f0_mean": round(clip.f0_mean, 4),
@@ -748,6 +914,7 @@ def curate_training_data():
             "has_transcript": clip.has_transcript,
             "in_crying_range": clip.in_crying_range,
             "prompt": clip.prompt,
+            "words": getattr(clip, "words", []),
         })
 
     labels_path = OUTPUT_DIR / "labels.json"
@@ -829,6 +996,11 @@ def print_statistics(labels: list):
     # Crying exclusion
     log.info("  Crying range excluded: %.0fs - %.0fs", CRYING_START_S, CRYING_END_S)
     log.info("")
+    # Word coverage
+    total_words = sum(len(l.get("words", [])) for l in labels)
+    log.info("  Total word-level entries: %d", total_words)
+    log.info("  Video frames per clip: %d (%dfps x %.1fs)",
+             VIDEO_FRAMES, VIDEO_FPS, CLIP_DURATION_S)
     log.info("Output directory: %s", OUTPUT_DIR)
     log.info("=" * 70)
 

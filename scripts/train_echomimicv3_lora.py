@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""EchoMimicV3 LoRA training with EXACT tensor shapes from the inference pipeline.
+"""EchoMimicV3 LoRA v4 training with FULL VIDEO CLIP temporal latents.
 
-Shapes captured from pipeline forward:
-  x:          (1, 16, 13, 60, 60)   - latent
+v4 KEY CHANGE: Encodes actual 2-second video clips (49 frames) through the VAE
+to produce temporal latents (1, 16, 13, 60, 60). The model learns HOW the mouth
+moves over time, not just what the face looks like in a frozen moment.
+
+Previous versions (v1-v3) encoded single frames and expanded them to fill the
+temporal dimension — the model saw the same face repeated 13 times, so it only
+learned identity, not temporal mouth movement patterns.
+
+Shapes:
+  x:          (1, 16, 13, 60, 60)   - latent (ACTUAL video, not repeated frame)
   t:          (1,) int64             - timestep
   context[0]: list                   - text embeddings from T5
   context[1]: (1, 49, 5, 12, 768)   - audio embeds (B, F, window, layers, dim)
   context[2]: int                    - latent temporal frames (13)
   context[3]: None                   - IP mask
   seq_len:    11700                  - 13*60*60/4
-  clip_fea:   (1, 257, 1280)        - CLIP image features
+  clip_fea:   (1, 257, 1280)        - CLIP image features (from first frame)
   y:          (1, 20, 13, 60, 60)   - mask(4ch) + masked_latent(16ch)
 """
 import gc, logging, os, sys, time
@@ -43,9 +51,9 @@ from peft import LoraConfig, get_peft_model
 MODEL_PATH = "/home/cabdru/echomimic_v3/pretrained_weights/Wan2.1-Fun-V1.1-1.3B-InP"
 TRANSFORMER_PATH = "/home/cabdru/echomimic_v3/pretrained_weights/echomimicv3-flash-pro/diffusion_pytorch_model.safetensors"
 WAV2VEC_DIR = "/home/cabdru/echomimic_v3/pretrained_weights/chinese-wav2vec2-base"
-DATA_DIR = "/home/cabdru/echomimic_v3/datasets/santa_training"
-COND_DIR = "/home/cabdru/echomimic_v3/datasets/santa_training/conditioning_v2"
-OUTPUT_DIR = "/home/cabdru/.clipcannon/models/santa/echov3_lora"
+DATA_DIR = "/home/cabdru/echomimic_v3/datasets/santa_curated_v5"
+COND_DIR = "/home/cabdru/echomimic_v3/datasets/santa_curated_v5/conditioning"
+OUTPUT_DIR = "/home/cabdru/.clipcannon/models/santa/echov3_lora_v5"
 CONFIG_PATH = "/home/cabdru/echomimic_v3/config/config.yaml"
 
 
@@ -57,38 +65,110 @@ def loudness_norm(audio, sr, target=-23.0):
     return pyln.normalize.loudness(audio, loudness, target)
 
 
-def pre_encode_all():
-    """Pre-encode ALL conditioning with exact shapes matching the pipeline."""
+def load_video_frames(video_path, target_frames=49, size=480):
+    """Load video clip frames as a tensor (B, C, T, H, W) normalized to [-1, 1]."""
+    import cv2
+    cap = cv2.VideoCapture(str(video_path))
+    frames = []
+    while len(frames) < target_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame = cv2.resize(frame, (size, size), interpolation=cv2.INTER_LANCZOS4)
+        frames.append(frame)
+    cap.release()
+
+    # Pad with last frame if video is shorter than target
+    while len(frames) < target_frames:
+        frames.append(frames[-1] if frames else np.zeros((size, size, 3), dtype=np.uint8))
+
+    # Truncate if longer
+    frames = frames[:target_frames]
+
+    # Stack: (T, H, W, C) -> (C, T, H, W) -> normalize to [-1, 1]
+    video_np = np.stack(frames, axis=0)  # (T, H, W, C)
+    video_tensor = torch.from_numpy(video_np).permute(3, 0, 1, 2).float()  # (C, T, H, W)
+    video_tensor = video_tensor / 127.5 - 1.0  # normalize to [-1, 1]
+    return video_tensor.unsqueeze(0)  # (1, C, T, H, W)
+
+
+def pre_encode_all(resolution=480):
+    """Pre-encode ALL conditioning with full video clip temporal latents.
+
+    v4 KEY CHANGE: Encodes 49-frame video clips through VAE to produce
+    temporal latents (1, 16, 13, H', W') instead of single-frame latents.
+
+    Args:
+        resolution: Pixel resolution for training (480 or 768).
+            480 → latent (1,16,13,60,60), 768 → latent (1,16,13,96,96)
+    """
     os.makedirs(COND_DIR, exist_ok=True)
     config = OmegaConf.load(CONFIG_PATH)
     device = torch.device("cuda")
     data_dir = Path(DATA_DIR)
-    samples = sorted([p.stem for p in (data_dir / "imgs").glob("*.jpg")])
 
-    prompt = "An older man dressed as Santa Claus with a white beard, round glasses, and red suit is talking emotionally."
+    # v4: enumerate from video clips directory
+    clip_dir = data_dir / "clips"
+    if not clip_dir.exists():
+        log.error("No clips/ directory found in %s. Run curate_training_data.py first.", DATA_DIR)
+        sys.exit(1)
+    samples = sorted([p.stem for p in clip_dir.glob("*.mp4")])
+    log.info("Found %d video clips in %s", len(samples), clip_dir)
+
+    # Load per-clip prompts if available, else use default
+    default_prompt = (
+        "An older man dressed as Santa Claus with a white beard, "
+        "round glasses, and red suit is talking emotionally."
+    )
+    prompts = {}
+    for name in samples:
+        prompt_file = data_dir / "prompts" / f"{name}.txt"
+        if prompt_file.exists():
+            prompts[name] = prompt_file.read_text(encoding="utf-8").strip()
+        else:
+            prompts[name] = default_prompt
+
     video_length = 49  # frames per clip at 25fps
     latent_t = (video_length - 1) // 4 + 1  # = 13 (temporal compression ratio 4)
 
-    # ---- T5 text encoding (encode once, reuse) ----
+    # ---- T5 text encoding (per-clip prompts) ----
     from src.wan_text_encoder import WanT5EncoderModel
     from transformers import AutoTokenizer
     log.info("Loading T5...")
-    tokenizer = AutoTokenizer.from_pretrained(os.path.join(MODEL_PATH, config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer')))
+    tokenizer = AutoTokenizer.from_pretrained(
+        os.path.join(MODEL_PATH, config['text_encoder_kwargs'].get('tokenizer_subpath', 'tokenizer'))
+    )
     text_encoder = WanT5EncoderModel.from_pretrained(
         os.path.join(MODEL_PATH, config['text_encoder_kwargs'].get('text_encoder_subpath', 'text_encoder')),
         additional_kwargs=OmegaConf.to_container(config['text_encoder_kwargs']),
         torch_dtype=torch.bfloat16,
     ).to(device).eval()
-    text_inputs = tokenizer(prompt, return_tensors="pt", padding="max_length", max_length=512, truncation=True)
-    seq_lens = text_inputs.attention_mask.sum(dim=1).tolist()
-    with torch.no_grad():
-        prompt_embeds = text_encoder(text_inputs.input_ids.to(device), attention_mask=text_inputs.attention_mask.to(device))[0]
-    # Pipeline returns list of 2D tensors: [u[:seq_len] for each batch item]
-    text_context_cpu = [prompt_embeds[0, :seq_lens[0]].cpu()]  # list of (seq_len, dim)
-    del text_encoder, tokenizer; gc.collect(); torch.cuda.empty_cache()
-    log.info("T5 done. VRAM: %.1fGB", torch.cuda.memory_allocated()/1e9)
 
-    # ---- CLIP image encoding ----
+    # Encode unique prompts only (most clips share same category prompt)
+    unique_prompts = list(set(prompts.values()))
+    prompt_to_embedding = {}
+    for idx, prompt_text in enumerate(unique_prompts):
+        text_inputs = tokenizer(
+            prompt_text, return_tensors="pt",
+            padding="max_length", max_length=512, truncation=True,
+        )
+        seq_lens = text_inputs.attention_mask.sum(dim=1).tolist()
+        with torch.no_grad():
+            prompt_embeds = text_encoder(
+                text_inputs.input_ids.to(device),
+                attention_mask=text_inputs.attention_mask.to(device),
+            )[0]
+        prompt_to_embedding[prompt_text] = [prompt_embeds[0, :seq_lens[0]].cpu()]
+        if (idx + 1) % 5 == 0:
+            log.info("  T5: %d/%d unique prompts", idx + 1, len(unique_prompts))
+
+    text_contexts = {name: prompt_to_embedding[prompts[name]] for name in samples}
+    del text_encoder, tokenizer; gc.collect(); torch.cuda.empty_cache()
+    log.info("T5 done: %d unique prompts encoded. VRAM: %.1fGB",
+             len(unique_prompts), torch.cuda.memory_allocated() / 1e9)
+
+    # ---- CLIP image encoding (from reference frame / first frame) ----
     import torchvision.transforms.functional as TF
     from src.wan_image_encoder import CLIPModel
     log.info("Loading CLIP...")
@@ -98,11 +178,12 @@ def pre_encode_all():
 
     clip_features = {}
     for idx, name in enumerate(samples):
-        img = Image.open(data_dir / "imgs" / f"{name}.jpg").convert("RGB").resize((480, 480))
+        img = Image.open(data_dir / "imgs" / f"{name}.jpg").convert("RGB").resize((resolution, resolution))
         clip_image = TF.to_tensor(img).sub_(0.5).div_(0.5).to(device, dtype=torch.bfloat16)
         with torch.no_grad():
             clip_features[name] = clip_encoder([clip_image[:, None, :, :]]).cpu()
-        if (idx+1) % 50 == 0: log.info("  CLIP: %d/%d", idx+1, len(samples))
+        if (idx + 1) % 50 == 0:
+            log.info("  CLIP: %d/%d", idx + 1, len(samples))
     del clip_encoder; gc.collect(); torch.cuda.empty_cache()
     log.info("CLIP done: %s per sample", clip_features[samples[0]].shape)
 
@@ -126,43 +207,64 @@ def pre_encode_all():
             audio_emb = rearrange(audio_emb, "b s d -> s b d")
 
         # Window the audio (from infer_flash.py lines 363-370)
-        indices = (torch.arange(2*2+1) - 2) * 1
+        indices = (torch.arange(2 * 2 + 1) - 2) * 1
         center_indices = torch.arange(0, video_length, 1).unsqueeze(1) + indices.unsqueeze(0)
-        center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0]-1)
+        center_indices = torch.clamp(center_indices, min=0, max=audio_emb.shape[0] - 1)
         audio_windowed = audio_emb[center_indices].unsqueeze(0)  # (1, F, 5, 12, 768)
         audio_features[name] = audio_windowed.cpu()
-        if (idx+1) % 50 == 0: log.info("  Audio: %d/%d", idx+1, len(samples))
+        if (idx + 1) % 50 == 0:
+            log.info("  Audio: %d/%d", idx + 1, len(samples))
     del audio_encoder, wav2vec_fe; gc.collect(); torch.cuda.empty_cache()
     log.info("Audio done: %s per sample", audio_features[samples[0]].shape)
 
-    # ---- VAE latent encoding (FP32, isolated) ----
+    # ---- VAE video latent encoding (FP32, isolated — CRITICAL for WSL2) ----
+    # v4: Encode FULL VIDEO CLIPS (49 frames) instead of single frames.
+    # This produces (1, 16, 13, 60, 60) temporal latents that capture mouth
+    # movement over time. MUST be FP32 to avoid WSL2 CUDA driver crash.
     from src.wan_vae import AutoencoderKLWan
-    log.info("Loading VAE (FP32)...")
+    log.info("Loading VAE (FP32) for video clip encoding...")
     vae = AutoencoderKLWan.from_pretrained(
         os.path.join(MODEL_PATH, config['vae_kwargs'].get('vae_subpath', 'vae')),
         additional_kwargs=OmegaConf.to_container(config['vae_kwargs']),
     ).to(torch.float32).to(device)
 
     latents = {}
+    ref_latents = {}  # First-frame latent for inpainting condition
     for idx, name in enumerate(samples):
-        img = Image.open(data_dir / "imgs" / f"{name}.jpg").convert("RGB").resize((480, 480))
-        # Create single-frame video tensor (B, C, T=1, H, W)
-        tensor = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 127.5 - 1.0
-        tensor = tensor.unsqueeze(0).unsqueeze(2).to(device)  # (1, 3, 1, 480, 480)
+        # v4: Load full video clip (49 frames at 25fps, resolution x resolution)
+        clip_path = clip_dir / f"{name}.mp4"
+        video_tensor = load_video_frames(clip_path, target_frames=video_length, size=resolution)
+        video_tensor = video_tensor.to(device)  # (1, 3, 49, 480, 480) float32
+
         with torch.no_grad():
-            lat = vae.encode(tensor).latent_dist.sample()
+            lat = vae.encode(video_tensor).latent_dist.sample()
+            # lat shape: (1, 16, 13, 60, 60) — FULL temporal latent!
+
+            # Also encode first frame only for inpainting reference
+            first_frame = video_tensor[:, :, :1, :, :]  # (1, 3, 1, 480, 480)
+            ref_lat = vae.encode(first_frame).latent_dist.sample()
+            # ref_lat shape: (1, 16, 1, 60, 60)
+
         latents[name] = lat.cpu()
-        if (idx+1) % 50 == 0: log.info("  VAE: %d/%d", idx+1, len(samples))
+        ref_latents[name] = ref_lat.cpu()
+
+        if (idx + 1) % 10 == 0:
+            log.info("  VAE: %d/%d | latent=%s | VRAM=%.1fGB",
+                     idx + 1, len(samples), lat.shape,
+                     torch.cuda.memory_allocated() / 1e9)
+
     del vae; gc.collect(); torch.cuda.empty_cache()
-    log.info("VAE done: %s per sample", latents[samples[0]].shape)
+    log.info("VAE done: %s per sample (temporal!) + %s reference",
+             latents[samples[0]].shape, ref_latents[samples[0]].shape)
 
     # ---- Save everything ----
     for name in samples:
         torch.save({
-            "text_context": text_context_cpu,
+            "text_context": text_contexts[name],
             "clip_fea": clip_features[name],      # (1, 257, 1280)
             "audio_emb": audio_features[name],     # (1, 49, 5, 12, 768)
-            "latent": latents[name],               # (1, 16, 1, 60, 60)
+            "latent": latents[name],               # (1, 16, 13, 60, 60) — FULL VIDEO!
+            "ref_latent": ref_latents[name],       # (1, 16, 1, 60, 60) — first frame
             "latent_t": latent_t,                  # 13
             "video_length": video_length,           # 49
         }, Path(COND_DIR) / f"{name}.pt")
@@ -222,28 +324,38 @@ def train_lora(steps=2000, rank=128, lr=2e-4, save_every=500):
         for sample in loader:
             if step >= steps: break
 
-            latent = sample["latent"].to(device, dtype=torch.bfloat16)  # (1, 16, 1, 60, 60)
+            # v4: latent is FULL VIDEO (1, 16, 13, 60, 60) — NOT a repeated frame!
+            latent = sample["latent"].to(device, dtype=torch.bfloat16)  # (1, 16, 13, 60, 60)
             clip_fea = sample["clip_fea"].to(device, dtype=torch.bfloat16)  # (1, 257, 1280)
             audio_emb = sample["audio_emb"].to(device, dtype=torch.bfloat16)  # (1, 49, 5, 12, 768)
             latent_t = sample["latent_t"]  # 13
 
-            # Expand latent to match expected temporal dim (repeat frame to fill T=13)
-            latent_expanded = latent.expand(-1, -1, latent_t, -1, -1)  # (1, 16, 13, 60, 60)
-            B, C, T, H, W = latent_expanded.shape
+            B, C, T, H, W = latent.shape
 
             # Flow matching noise
-            noise = torch.randn_like(latent_expanded)
+            noise = torch.randn_like(latent)
             t_idx = torch.randint(0, 1000, (1,)).item()
             sigma = t_idx / 1000.0
-            noisy = (1 - sigma) * latent_expanded + sigma * noise
+            noisy = (1 - sigma) * latent + sigma * noise
 
-            # Inpainting condition y (mask + masked_latent)
+            # v4: Inpainting condition with reference frame visible
+            # Frame 0 = reference (unmasked), Frames 1-12 = masked (generate)
+            # This matches inference: the model sees the first frame and generates the rest
             mask_cond = torch.ones(B, 4, T, H, W, device=device, dtype=torch.bfloat16)
-            masked_lat = torch.zeros(B, C, T, H, W, device=device, dtype=torch.bfloat16)
+            mask_cond[:, :, 0, :, :] = 0  # Frame 0 is visible (not masked)
+
+            # Masked latent: first frame from reference, rest zeroed
+            ref_latent = sample.get("ref_latent")
+            if ref_latent is not None:
+                ref_latent = ref_latent.to(device, dtype=torch.bfloat16)
+                masked_lat = torch.zeros(B, C, T, H, W, device=device, dtype=torch.bfloat16)
+                masked_lat[:, :, 0:1, :, :] = ref_latent  # First frame reference
+            else:
+                masked_lat = torch.zeros(B, C, T, H, W, device=device, dtype=torch.bfloat16)
+
             y = torch.cat([mask_cond, masked_lat], dim=1)  # (1, 20, 13, 60, 60)
 
             # Context tuple: (text_context_list, audio_emb, latent_t, ip_mask)
-            # text_context is a list of 2D tensors [(seq_len, dim)]
             text_ctx = sample["text_context"]
             text_ctx = [t.to(device, dtype=torch.bfloat16) for t in text_ctx]
             context_tuple = (text_ctx, audio_emb, latent_t, None)
@@ -262,7 +374,8 @@ def train_lora(steps=2000, rank=128, lr=2e-4, save_every=500):
             if isinstance(output, tuple):
                 output = output[0]
 
-            target = latent_expanded - noise
+            # v4: Target is ACTUAL video temporal variation, not repeated frame!
+            target = latent - noise
             loss = F.mse_loss(output.float(), target.float()) / 2
             loss.backward()
             loss_accum += loss.item()
@@ -291,12 +404,18 @@ if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--phase", choices=["encode", "train", "all"], default="all")
-    p.add_argument("--steps", type=int, default=2000)
-    p.add_argument("--rank", type=int, default=128)
+    p.add_argument("--steps", type=int, default=3000)
+    p.add_argument("--rank", type=int, default=256)
     p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--resolution", type=int, default=480,
+                   help="Training resolution (480 or 768). 768 uses ~2x VRAM.")
     args = p.parse_args()
 
+    # Priority 3: Resolution is configurable. 768x768 should fit in 32GB
+    # with sequential offload. Latent becomes (1,16,13,96,96) at 768.
+    TRAIN_RESOLUTION = args.resolution
+
     if args.phase in ("encode", "all"):
-        pre_encode_all()
+        pre_encode_all(resolution=TRAIN_RESOLUTION)
     if args.phase in ("train", "all"):
         train_lora(steps=args.steps, rank=args.rank, lr=args.lr)
