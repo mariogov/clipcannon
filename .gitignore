@@ -61,13 +61,9 @@ benchmarks/samples/**/*.wav
 *.pth
 *.zip
 
-# Media files - screenshots, videos
-docs/*.png
-docs/*.jpg
-docs/*.mp4
-docs2/*.png
-docs2/*.mp4
-docs2/*.jpg
+# Documentation (kept locally, not in repo)
+docs/
+docs2/
 
 # Model checkpoints (large binaries)
 checkpoints/
@@ -75,18 +71,11 @@ checkpoints/
 # Temp working files
 temp/
 
-# Sensitive documents - NDAs, legal
-docs2/NDA_*.md
-
 # Playwright MCP artifacts (screenshots, logs, session files)
 .playwright-mcp/
 
 # Stray home-directory artifact
 ~/
-
-# Generated documentation
-docs2/clipcannondocs/
-docs2/ocrprovdocs/
 
 # Video / large media files (general)
 *.mp4
