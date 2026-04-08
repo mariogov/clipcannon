@@ -19,27 +19,14 @@ from phoenix.render.compositor_bridge import (
     gpu_film_grain,
 )
 
-from phoenix.render.gsplat_avatar import (
-    AvatarRenderConfig,
-    GaussianAvatarModel,
-)
-
-from phoenix.render.avatar_renderer import (
-    GaussianAvatarRenderer,
-)
+# gsplat_avatar and avatar_renderer removed — replaced by EchoMimicV3 video pipeline
 
 from phoenix.render.flame_model import (
     FlameModel,
     FlameModelConfig,
 )
 
-from phoenix.render.gpu_pipeline import (
-    RenderPipeline,
-)
-
-from phoenix.render.frame_selector import (
-    FrameSelector,
-)
+# gpu_pipeline and frame_selector removed — replaced by EchoMimicV3 video pipeline
 
 from phoenix.render.physics_face import (
     FaceState,
@@ -57,13 +44,8 @@ __all__ = [
     "gpu_brightness_jitter",
     "gpu_composite_face",
     "gpu_film_grain",
-    "AvatarRenderConfig",
-    "GaussianAvatarModel",
-    "GaussianAvatarRenderer",
     "FlameModel",
     "FlameModelConfig",
-    "RenderPipeline",
-    "FrameSelector",
     "FaceState",
     "PhysicsFaceEngine",
 ]
