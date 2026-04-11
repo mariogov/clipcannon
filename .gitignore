@@ -85,3 +85,9 @@ temp/
 *.webm
 *.y4m
 vendor/
+
+# API keys and credentials — NEVER commit
+.env
+*.key
+*credentials*
+*api_key*
