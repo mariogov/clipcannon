@@ -47,6 +47,7 @@ tmp/
 
 # Swarm runtime state
 .swarm/
+memory/
 
 # Large test video files
 testdata/*.mp4

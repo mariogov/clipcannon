@@ -238,7 +238,16 @@ def main():
         with torch.no_grad():
             outputs = model.get_image_features(**inputs)
 
-        embeddings = outputs / outputs.norm(dim=-1, keepdim=True)
+        # transformers 5.x: get_image_features returns BaseModelOutputWithPooling.
+        # .pooler_output is the [batch, 1152] pooled SigLIP embedding.
+        if not hasattr(outputs, "pooler_output"):
+            raise RuntimeError(
+                f"SigLIP get_image_features returned unexpected type "
+                f"{type(outputs).__name__!s}; expected object with .pooler_output "
+                f"(transformers API surface changed)."
+            )
+        features = outputs.pooler_output
+        embeddings = features / features.norm(dim=-1, keepdim=True)
         all_embeddings.extend(embeddings.cpu().tolist())
 
         print(

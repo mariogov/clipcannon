@@ -52,7 +52,7 @@ def _check_demucs_available() -> bool:
 async def _run_demucs_subprocess(
     audio_path: Path,
     output_dir: Path,
-) -> tuple[bool, str]:
+) -> tuple[bool, int, str, str]:
     """Run demucs via subprocess for better isolation.
 
     Uses the two-stems mode to separate vocals from accompaniment,
@@ -63,7 +63,8 @@ async def _run_demucs_subprocess(
         output_dir: Directory for demucs output.
 
     Returns:
-        Tuple of (success, stderr_output).
+        Tuple of (success, returncode, stdout, stderr). stdout and stderr
+        are always returned so callers can surface them in error messages.
     """
     cmd = [
         "python",
@@ -87,13 +88,18 @@ async def _run_demucs_subprocess(
         timeout=3600,
         check=False,
     )
-    return proc.returncode == 0, proc.stderr
+    return (
+        proc.returncode == 0,
+        proc.returncode,
+        proc.stdout or "",
+        proc.stderr or "",
+    )
 
 
 async def _run_demucs_api(
     audio_path: Path,
     output_dir: Path,
-) -> bool:
+) -> tuple[bool, str]:
     """Run demucs via the Python API.
 
     Args:
@@ -101,8 +107,12 @@ async def _run_demucs_api(
         output_dir: Directory for output stems.
 
     Returns:
-        True if separation succeeded.
+        Tuple of (success, error_traceback). On success the traceback
+        string is empty; on failure it contains the full traceback so
+        the caller can surface it in the stage error message.
     """
+    import traceback
+
     try:
         import torch
         import torchaudio
@@ -118,7 +128,15 @@ async def _run_demucs_api(
             if wav.dim() == 1:
                 wav = wav.unsqueeze(0)
             ref = wav.mean(0)
-            wav = (wav - ref.mean()) / ref.std()
+            # Guard against zero-variance (silent) input which would
+            # produce NaN after normalization and crash htdemucs.
+            std = ref.std()
+            if not torch.isfinite(std) or float(std) < 1e-8:
+                raise RuntimeError(
+                    f"Input audio has near-zero variance (std={float(std):.3e}); "
+                    f"demucs cannot normalize it. Audio is likely silent."
+                )
+            wav = (wav - ref.mean()) / std
             wav = wav.unsqueeze(0)
 
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,11 +163,13 @@ async def _run_demucs_api(
 
             return True
 
-        return await asyncio.to_thread(_separate)
+        ok = await asyncio.to_thread(_separate)
+        return ok, ""
 
-    except Exception as exc:
-        logger.error("Demucs API separation failed: %s", exc)
-        return False
+    except Exception:
+        tb = traceback.format_exc()
+        logger.error("Demucs API separation failed:\n%s", tb)
+        return False, tb
 
 
 async def run_source_separation(
@@ -195,8 +215,11 @@ async def run_source_separation(
 
     # Try subprocess approach first (better isolation)
     demucs_output_dir = project_dir / "demucs_tmp"
-    success, stderr = await _run_demucs_subprocess(audio_original, demucs_output_dir)
+    success, rc, subprocess_stdout, subprocess_stderr = await _run_demucs_subprocess(
+        audio_original, demucs_output_dir
+    )
 
+    subprocess_reason = ""
     if success:
         # Move stems to stems/ directory
         # Demucs outputs to: demucs_tmp/htdemucs/<filename_without_ext>/
@@ -212,22 +235,43 @@ async def run_source_separation(
             shutil.rmtree(demucs_output_dir, ignore_errors=True)
         else:
             logger.warning(
-                "Expected demucs output at %s not found, trying API",
+                "demucs subprocess returned 0 but expected output dir %s "
+                "was not produced — falling through to API approach",
                 demucs_result_dir,
             )
+            subprocess_reason = (
+                f"subprocess exit 0 but output dir {demucs_result_dir} missing"
+            )
             success = False
+    else:
+        subprocess_reason = (
+            f"rc={rc}; stderr tail:\n{subprocess_stderr[-1500:] if subprocess_stderr else '(empty)'}"
+        )
+        logger.error(
+            "demucs subprocess failed (rc=%d); stderr tail:\n%s",
+            rc,
+            subprocess_stderr[-1500:] if subprocess_stderr else "(empty)",
+        )
 
+    api_reason = ""
     if not success:
-        # Fall back to API
-        logger.info("Subprocess demucs failed, trying API approach")
+        # Fall back to API (still in-process; this is a retry path, not a
+        # shim to make failures silent). If this also fails we bubble
+        # both errors up.
+        logger.info("Subprocess demucs failed, trying in-process API")
         shutil.rmtree(demucs_output_dir, ignore_errors=True)
-        success = await _run_demucs_api(audio_original, stems_dir)
+        success, api_reason = await _run_demucs_api(audio_original, stems_dir)
 
     if not success:
         return StageResult(
             success=False,
             operation=OPERATION,
-            error_message="Both subprocess and API demucs approaches failed",
+            error_message=(
+                f"Source separation failed on {audio_original}. "
+                f"Both the demucs subprocess AND the in-process API failed.\n"
+                f"=== subprocess: {subprocess_reason}\n"
+                f"=== API: {api_reason[-1500:] if api_reason else '(no traceback)'}"
+            ),
         )
 
     # Verify at least vocals.wav exists
