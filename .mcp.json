@@ -17,6 +17,11 @@
         "CLAUDE_FLOW_MEMORY_BACKEND": "hybrid"
       },
       "autoStart": false
+    },
+    "clipcannon": {
+      "command": "clipcannon",
+      "args": [],
+      "env": {}
     }
   }
 }
