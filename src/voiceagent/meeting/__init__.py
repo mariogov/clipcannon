@@ -8,7 +8,6 @@ from voiceagent.meeting.errors import (
     MeetingError,
     MeetingLipSyncError,
     MeetingResponseError,
-    MeetingTranscriptStoreError,
     MeetingTranscriptionError,
     MeetingVoiceError,
 )
@@ -17,14 +16,12 @@ from voiceagent.meeting.transcript_format import (
     MeetingDocument,
     MeetingSegment,
 )
-from voiceagent.meeting.transcript_store import MeetingTranscriptStore
 
 __all__ = [
     "CloneInteraction",
     "MeetingConfig",
     "MeetingDocument",
     "MeetingSegment",
-    "MeetingTranscriptStore",
     "MeetingAddressError",
     "MeetingAudioError",
     "MeetingBehaviorError",
@@ -32,7 +29,6 @@ __all__ = [
     "MeetingError",
     "MeetingLipSyncError",
     "MeetingResponseError",
-    "MeetingTranscriptStoreError",
     "MeetingTranscriptionError",
     "MeetingVoiceError",
 ]

@@ -51,10 +51,6 @@ class TestDefaultConfig:
         assert cfg.lip_sync.output_fps == 30
         assert cfg.lip_sync.idle_fps == 30
 
-    def test_ocr_provenance_url(self) -> None:
-        cfg = MeetingConfig()
-        assert cfg.transcript.ocr_provenance_url == "http://localhost:3377/mcp"
-
     def test_bot_join_defaults(self) -> None:
         cfg = MeetingConfig()
         assert cfg.bot_join.enabled is False

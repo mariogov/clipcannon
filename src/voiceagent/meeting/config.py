@@ -140,25 +140,17 @@ class ResponseConfig:
 
 @dataclass(frozen=True)
 class TranscriptConfig:
-    """Meeting transcript storage settings via OCR Provenance MCP.
+    """Meeting transcript storage settings.
 
     Args:
-        ocr_provenance_url: URL of the OCR Provenance session proxy (port 3377).
-        database_name: Name of the OCR Provenance database for meeting transcripts.
-        transcript_dir: Local directory for Markdown transcript files (crash safety).
-        flush_interval_seconds: Flush transcript to disk every N seconds.
-        flush_interval_segments: Flush transcript to disk every N segments.
+        transcript_dir: Local directory for Markdown transcript files.
         auto_end_silence_minutes: End meeting after this many minutes of silence.
         auto_summary: Whether to generate post-meeting summary.
         auto_title: Whether to auto-generate meeting title.
         auto_tag: Whether to auto-tag meetings by topic, clone, platform.
     """
 
-    ocr_provenance_url: str = "http://localhost:3377/mcp"
-    database_name: str = "meetings"
     transcript_dir: str = "~/.voiceagent/meeting_transcripts"
-    flush_interval_seconds: int = 30
-    flush_interval_segments: int = 10
     auto_end_silence_minutes: int = 5
     auto_summary: bool = True
     auto_title: bool = True
