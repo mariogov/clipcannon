@@ -92,3 +92,11 @@ vendor/
 *.key
 *credentials*
 *api_key*
+
+# Backup and temporary files
+.mcp.json.bak*
+
+# Development outputs and scripts
+outputs/
+scripts/echomimic/
+third_party/
