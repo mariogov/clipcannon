@@ -1,6 +1,6 @@
 """Meeting transcript Markdown document builder.
 
-Creates structured Markdown with YAML-like frontmatter that OCR Provenance
+Creates structured Markdown with YAML-like frontmatter that Leapable
 can ingest as a text document (Markdown passthrough -- no OCR, no GPU).
 """
 from __future__ import annotations
@@ -266,7 +266,7 @@ def build_transcript_markdown(doc: MeetingDocument) -> str:
         doc: The meeting document containing all transcript data.
 
     Returns:
-        Markdown string ready for OCR Provenance ingestion.
+        Markdown string ready for Leapable ingestion.
 
     Raises:
         MeetingTranscriptStoreError: If document data is invalid.

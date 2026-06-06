@@ -16,12 +16,14 @@ from voiceagent.meeting.transcript_format import (
     MeetingDocument,
     MeetingSegment,
 )
+from voiceagent.meeting.transcript_store import MeetingTranscriptStore
 
 __all__ = [
     "CloneInteraction",
     "MeetingConfig",
     "MeetingDocument",
     "MeetingSegment",
+    "MeetingTranscriptStore",
     "MeetingAddressError",
     "MeetingAudioError",
     "MeetingBehaviorError",

@@ -243,7 +243,7 @@ def join(url: str, display_name: str, clone: str, voice: str | None) -> None:
 @meeting.command()
 @click.option("--limit", default=50, show_default=True, help="Max meetings to list")
 def history(limit: int) -> None:
-    """List past meetings from OCR Provenance."""
+    """List past meetings from Leapable."""
     import json
 
     from voiceagent.meeting.config import load_meeting_config
@@ -267,7 +267,7 @@ def history(limit: int) -> None:
 @click.argument("query")
 @click.option("--limit", default=20, show_default=True, help="Max results")
 def search(query: str, limit: int) -> None:
-    """Search past meetings in OCR Provenance."""
+    """Search past meetings in Leapable."""
     import json
 
     from voiceagent.meeting.config import load_meeting_config

@@ -51,6 +51,13 @@ class TestDefaultConfig:
         assert cfg.lip_sync.output_fps == 30
         assert cfg.lip_sync.idle_fps == 30
 
+    def test_transcript_leapable_defaults(self) -> None:
+        cfg = MeetingConfig()
+        assert cfg.transcript.leapable_url == "http://localhost:4100/mcp"
+        assert cfg.transcript.database_name == "meetings"
+        assert cfg.transcript.flush_interval_seconds == 30
+        assert cfg.transcript.flush_interval_segments == 10
+
     def test_bot_join_defaults(self) -> None:
         cfg = MeetingConfig()
         assert cfg.bot_join.enabled is False

@@ -1,6 +1,6 @@
 """Tests for voiceagent.meeting.manager -- real objects, no mocks.
 
-External services (PulseAudio, Ollama, OCR Provenance) are not running
+External services (PulseAudio, Ollama, Leapable) are not running
 during tests. Tests verify construction, field presence, and sync-only
 operations.
 """

@@ -116,12 +116,12 @@ class CloneMeetingManager:
             on_audio=transcriber.feed_audio,
         )
 
-        # Create detection + response pipeline with OCR Provenance RAG
+        # Create detection + response pipeline with Leapable RAG
         detector = AddressDetector(clone_name, clone_cfg)
         responder = MeetingResponder(
             config=self._config.response,
             clone_name=clone_name,
-            ocr_client=store._client,  # Share the OCR Provenance connection
+            leapable_client=store._client,  # Share the Leapable connection
         )
         voice_out = MeetingVoiceOutput(
             config=self._config.voice, clone_name=voice,
@@ -325,11 +325,11 @@ class CloneMeetingManager:
     # ------------------------------------------------------------------
 
     async def _flush_loop(self, clone_name: str) -> None:
-        """Periodically flush transcript to disk and ingest into OCR Provenance.
+        """Periodically flush transcript to disk and ingest into Leapable.
 
         Two operations on each cycle:
         1. Flush to local disk for crash safety
-        2. Ingest partial transcript into OCR Provenance for live search
+        2. Ingest partial transcript into Leapable for live search
         """
         instance = self._clones.get(clone_name)
         if instance is None:
@@ -347,7 +347,7 @@ class CloneMeetingManager:
                 ):
                     instance.transcript_store.flush(instance.meeting_id)
 
-                # Ingest into OCR Provenance every 3rd flush cycle
+                # Ingest into Leapable every 3rd flush cycle
                 # for live search capability without overwhelming the server
                 ingest_counter += 1
                 if ingest_counter >= 3:
@@ -413,7 +413,7 @@ class CloneMeetingManager:
             except MeetingError as e:
                 logger.error("Summary generation failed: %s", e)
 
-        # End meeting -- ingest into OCR Provenance, delete local file
+        # End meeting -- ingest into Leapable, delete local file
         doc_id = None
         try:
             doc_id = await instance.transcript_store.end_meeting(
@@ -457,7 +457,7 @@ class CloneMeetingManager:
         return self._clones.get(clone_name)
 
     async def list_meetings(self, limit: int = 50) -> dict:
-        """List past meetings from OCR Provenance."""
+        """List past meetings from Leapable."""
         store = MeetingTranscriptStore(config=self._config.transcript)
         try:
             return await store.list_meetings(limit=limit)
