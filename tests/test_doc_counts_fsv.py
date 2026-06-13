@@ -10,6 +10,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -51,7 +53,10 @@ def test_readme_tool_table_sums_to_total():
 
 def test_whitepaper_stage_count():
     counts = _load_counts()
-    wp = (ROOT / "docs/clipcannon_whitepaper.md").read_text()
+    wp_path = ROOT / "docs/clipcannon_whitepaper.md"
+    if not wp_path.exists():
+        pytest.skip("whitepaper is kept local-only (docs/ is gitignored); not in repo")
+    wp = wp_path.read_text()
     print(f"[FSV] whitepaper checked for {counts['stages']}-stage")
     assert "22-stage" not in wp and "22-Stage" not in wp
     assert f"{counts['stages']}-stage" in wp or f"{counts['stages']}-Stage" in wp
