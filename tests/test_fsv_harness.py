@@ -12,10 +12,10 @@ import subprocess
 
 import numpy as np
 import pytest
+from tests import fsv_harness as fsv
 
 from clipcannon.db.connection import get_connection
 from clipcannon.db.schema import create_project_db
-from tests import fsv_harness as H
 
 PROJECT_ID = "proj_fsv_harness"
 
@@ -50,15 +50,15 @@ def _seed(db_path, valences):
 def test_rowcount_reads_source_of_truth(tmp_path):
     db = create_project_db(PROJECT_ID, base_dir=tmp_path)
     _seed(db, [0.8, 0.2, 0.55])
-    assert H.assert_rowcount(db, "emotion_curve", 3) == 3
+    assert fsv.assert_rowcount(db, "emotion_curve", 3) == 3
     with pytest.raises(AssertionError, match="expected 99"):
-        H.assert_rowcount(db, "emotion_curve", 99)
+        fsv.assert_rowcount(db, "emotion_curve", 99)
 
 
 def test_vector_store_happy(tmp_path):
     db = create_project_db(PROJECT_ID, base_dir=tmp_path)
     _seed(db, [0.8, 0.2, 0.55])
-    arr = H.assert_vector_store(db, "vec_emotion", "emotion_embedding", 1024, min_count=3)
+    arr = fsv.assert_vector_store(db, "vec_emotion", "emotion_embedding", 1024, min_count=3)
     assert arr.shape == (3, 1024)
     assert np.any(arr)
 
@@ -67,7 +67,7 @@ def test_vector_store_wrong_dim_raises(tmp_path):
     db = create_project_db(PROJECT_ID, base_dir=tmp_path)
     _seed(db, [0.8, 0.2, 0.55])
     with pytest.raises(AssertionError, match="dim"):
-        H.read_vectors(db, "vec_emotion", "emotion_embedding", 512)  # stored is 1024
+        fsv.read_vectors(db, "vec_emotion", "emotion_embedding", 512)  # stored is 1024
 
 
 def test_vector_store_all_zero_raises(tmp_path):
@@ -91,26 +91,26 @@ def test_vector_store_all_zero_raises(tmp_path):
     finally:
         conn.close()
     with pytest.raises(AssertionError, match="ALL vectors are zero"):
-        H.assert_vector_store(db, "vec_emotion", "emotion_embedding", 1024, min_count=3)
+        fsv.assert_vector_store(db, "vec_emotion", "emotion_embedding", 1024, min_count=3)
 
 
 def test_no_nan_raises():
     bad = np.array([1.0, np.nan, 2.0], dtype=np.float32)
     with pytest.raises(AssertionError, match="non-finite"):
-        H.assert_no_nan(bad, "probe")
+        fsv.assert_no_nan(bad, "probe")
 
 
 def test_missing_db_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        H.table_rowcount(tmp_path / "nope.db", "emotion_curve")
+        fsv.table_rowcount(tmp_path / "nope.db", "emotion_curve")
 
 
 def test_snapshot_diff_proves_trigger(tmp_path):
     db = create_project_db(PROJECT_ID, base_dir=tmp_path)
-    before = H.snapshot(db, ["emotion_curve"])
+    before = fsv.snapshot(db, ["emotion_curve"])
     _seed(db, [0.8, 0.2, 0.55])
-    after = H.snapshot(db, ["emotion_curve"])
-    delta = H.diff_snapshot(before, after)
+    after = fsv.snapshot(db, ["emotion_curve"])
+    delta = fsv.diff_snapshot(before, after)
     assert delta["emotion_curve"] == 3
 
 
@@ -126,7 +126,7 @@ def test_media_video_via_ffmpeg(tmp_path):
          "-pix_fmt", "yuv420p", str(out)],
         capture_output=True, check=True,
     )
-    H.assert_media(out, width=320, height=240, min_duration_s=1.9, has_audio=False)
+    fsv.assert_media(out, width=320, height=240, min_duration_s=1.9, has_audio=False)
 
 
 @pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not installed")
@@ -136,7 +136,7 @@ def test_media_audio_via_ffmpeg(tmp_path):
         ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2:sample_rate=16000", str(out)],
         capture_output=True, check=True,
     )
-    H.assert_media(out, has_audio=True, sample_rate=16000, min_duration_s=1.9)
+    fsv.assert_media(out, has_audio=True, sample_rate=16000, min_duration_s=1.9)
 
 
 @pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not installed")
@@ -144,4 +144,4 @@ def test_media_empty_file_raises(tmp_path):
     empty = tmp_path / "empty.mp4"
     empty.touch()
     with pytest.raises(AssertionError, match="empty"):
-        H.ffprobe_media(empty)
+        fsv.ffprobe_media(empty)
