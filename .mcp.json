@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "clipcannon": {
-      "command": "clipcannon",
+      "command": "scripts/clipcannon-mcp",
       "args": [],
       "env": {}
     }

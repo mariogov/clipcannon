@@ -396,11 +396,10 @@ class TestGPUMemoryLeak:
             result = gpu_brightness_jitter(frame, 5.0)
             assert result.shape == frame.shape
 
-            try:
-                result = gpu_composite_face(frame, face, 100, 100, 256, 256)
-                assert result.shape == frame.shape
-            except Exception:
-                pass  # May fail if face region out of bounds
+            # Face (256x256) at (100,100) is fully inside the 1280x720 frame, so
+            # this must succeed — assert it for real (issue #58: no swallowing).
+            result = gpu_composite_face(frame, face, 100, 100, 256, 256)
+            assert result.shape == frame.shape
 
             del frame, face, overlay, result
 

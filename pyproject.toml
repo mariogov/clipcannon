@@ -7,8 +7,16 @@ name = "clipcannon"
 version = "0.1.0"
 description = "AI-powered video understanding and editing pipeline via MCP"
 readme = "README.md"
-license = "BSL-1.1"
-requires-python = ">=3.12"
+# Freeform license text: BSL-1.1 is NOT a valid SPDX identifier, so it must be
+# given as a license table (a bare string is validated against the SPDX list by
+# hatchling/PEP 639 and would fail the build). See issue #1.
+license = { text = "BSL-1.1" }
+# The ML runtime interpreter is conda CPython 3.13 (Blackwell torch cu13x lives
+# there); the .venv that hosts the MCP server is also 3.13. Capping at <3.13
+# (an earlier suggestion) would make the project incompatible with its own
+# interpreter, so we resolve for 3.12–3.13 and relax the bad ML pins via
+# [tool.uv].override-dependencies below instead. See issue #1.
+requires-python = ">=3.12,<3.14"
 authors = [
     { name = "ClipCannon Team" },
 ]
@@ -84,6 +92,49 @@ clipcannon = "clipcannon.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/clipcannon", "src/license_server", "src/phoenix"]
 
+# ---------------------------------------------------------------------------
+# uv resolver overrides (issue #1: `uv sync` was unsatisfiable)
+#
+# Root cause: several research-ML packages declare *exact* version pins that are
+# mutually incompatible and incompatible with a Blackwell (sm_120) torch build:
+#   - audiocraft 1.3.0   pins torch==2.1.0 / torchvision==0.16.0 /
+#                        torchaudio==2.1.0 / torchtext==0.16.0
+#   - resemble-enhance   pins scipy==1.11.4 / gradio==4.8.0 / librosa==0.10.1 /
+#                        matplotlib==3.8.1 / soundfile==0.12.1
+#   - faster-whisper -> av 11.x which fails to build against ffmpeg 7+/8+
+#
+# Overrides are *absolute*: they replace whatever a constituent package requests,
+# expanding the erroneous upper/exact bounds so the graph becomes satisfiable.
+# This is uv's documented escape hatch for incorrect metadata
+# (https://docs.astral.sh/uv/concepts/resolution/#dependency-overrides).
+#
+# The heavy ML stack actually runs from the conda interpreter
+# (/home/cabdru/miniconda3/bin/python3, torch 2.11+cu13x). These overrides only
+# need to make the lock *resolvable*; they do not dictate the GPU runtime.
+[tool.uv]
+override-dependencies = [
+    # Relax audiocraft's hard torch pins up to a modern, Blackwell-capable range.
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+    "torchaudio>=2.3.0",
+    # torchtext is archived and ships no cp313 wheels; eliminate it from the
+    # resolved graph (always-false marker). audiocraft only touches it for a
+    # legacy text path we do not use; the ML runtime is conda-side anyway.
+    "torchtext; python_version < '0'",
+    # resemble-enhance exact pins -> relax to ranges compatible with ace-step.
+    "scipy>=1.12.0",
+    "gradio>=4.8.0",
+    "librosa>=0.10.0",
+    "matplotlib>=3.7.0",
+    "soundfile>=0.12.0",
+    "numpy>=1.26.0",
+    # resemble-enhance pins tqdm==4.66.1, ace-step pins tqdm==4.67.1 — relax.
+    "tqdm>=4.66.1",
+    # av 11.x uses the removed AV_OPT_TYPE_CHANNEL_LAYOUT API and will not build
+    # against ffmpeg 7/8; 14+ targets the modern API.
+    "av>=14.0.0",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -95,6 +146,11 @@ ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "E501"]
+# These package roots intentionally set HF offline env vars before importing any
+# ML library (issue #59), so module-level imports legitimately follow code.
+"src/phoenix/__init__.py" = ["E402"]
+"src/clipcannon/__init__.py" = ["E402"]
+"src/voiceagent/__init__.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

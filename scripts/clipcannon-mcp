@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# ClipCannon MCP server launcher (portable, no hardcoded user paths — issue #61/#29).
+#
+# Why this exists: a bare `clipcannon` command in .mcp.json ENOENTs because the
+# console script is not on the PATH that the MCP client uses to spawn servers.
+# Baking an absolute per-user home path into the tracked .mcp.json would
+# reintroduce the hardcoded-path problem fixed in #29. This launcher resolves the
+# repo + venv relative to its OWN location, so it works on any clone, and FAILS
+# LOUD (never silently) when the environment is not provisioned.
+set -euo pipefail
+
+# Resolve the directory of this script even through symlinks.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
+
+VENV_BIN="$REPO_ROOT/.venv/bin/clipcannon"
+VENV_PY="$REPO_ROOT/.venv/bin/python"
+
+if [ -x "$VENV_BIN" ]; then
+  exec "$VENV_BIN" "$@"
+elif [ -x "$VENV_PY" ]; then
+  # Console script missing but interpreter present — run the module directly.
+  exec "$VENV_PY" -m clipcannon.server "$@"
+fi
+
+echo "FATAL: ClipCannon MCP server cannot launch." >&2
+echo "  what:  no executable found at $VENV_BIN (and no $VENV_PY)." >&2
+echo "  where: $REPO_ROOT" >&2
+echo "  why:   the project venv is not provisioned." >&2
+echo "  fix:   run 'uv sync' in $REPO_ROOT to create .venv, then retry." >&2
+exit 127

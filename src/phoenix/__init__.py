@@ -13,7 +13,19 @@ Exports:
         SpeakerTracker, SpeakerInfo, GestureLibrary, GestureClip
 """
 
-from phoenix.config import (
+# Issue #59: enforce no-runtime-model-downloads before any ML import. Inline
+# (stdlib only) to avoid a hard import dependency on clipcannon.
+import os as _os  # noqa: E402
+
+for _k, _v in (
+    ("HF_HUB_OFFLINE", "1"),
+    ("TRANSFORMERS_OFFLINE", "1"),
+    ("HF_HUB_DISABLE_TELEMETRY", "1"),
+    ("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1"),
+):
+    _os.environ.setdefault(_k, _v)
+
+from phoenix.config import (  # noqa: E402
     BehaviorWeights,
     CompositorConfig,
     PhoenixConfig,

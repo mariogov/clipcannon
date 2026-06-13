@@ -1,6 +1,12 @@
-"""Tests for StreamingTTS."""
+"""Tests for StreamingTTS chunking + dispatch.
+
+No mocks (issue #58): the TTS boundary is a *real* recording adapter — a small
+hand-written class implementing the same `synthesize(text) -> np.ndarray`
+contract the production adapters use. It records the exact texts the chunker
+dispatched and returns real (deterministic) audio, so we verify the actual
+chunking/flush behaviour against a real object, not a library call-spy.
+"""
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -15,7 +21,20 @@ async def make_token_stream(tokens: list[str]):
 
 
 def make_dummy_audio(n: int = 2400) -> np.ndarray:
-    return np.zeros(n, dtype=np.float32)
+    # Real, non-degenerate audio (a quiet ramp) so downstream type/dtype checks
+    # exercise actual array data, not a sentinel.
+    return np.linspace(-0.01, 0.01, n, dtype=np.float32)
+
+
+class RecordingTTSAdapter:
+    """Real adapter implementing the synthesize contract; records its inputs."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def synthesize(self, text: str) -> np.ndarray:
+        self.calls.append(text)
+        return make_dummy_audio()
 
 
 async def collect_chunks(stream_iter) -> list[np.ndarray]:
@@ -26,10 +45,8 @@ async def collect_chunks(stream_iter) -> list[np.ndarray]:
 
 
 @pytest.fixture
-def mock_adapter():
-    adapter = MagicMock()
-    adapter.synthesize = AsyncMock(return_value=make_dummy_audio())
-    return adapter
+def adapter():
+    return RecordingTTSAdapter()
 
 
 @pytest.fixture
@@ -37,59 +54,57 @@ def chunker():
     return SentenceChunker()
 
 
-def test_two_sentences(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_two_sentences(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     tokens = ["I", " am", " good", ".", " You", " are", " too", ".", " "]
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream(tokens)))
     )
     assert len(chunks) == 2
-    calls = [c.args[0] for c in mock_adapter.synthesize.call_args_list]
-    assert calls[0] == "I am good."
-    assert calls[1] == "You are too."
+    assert adapter.calls == ["I am good.", "You are too."]
 
 
-def test_flush_remaining(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_flush_remaining(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     tokens = ["Hi", " there"]
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream(tokens)))
     )
     assert len(chunks) == 1
-    mock_adapter.synthesize.assert_called_once_with("Hi there")
+    assert adapter.calls == ["Hi there"]
 
 
-def test_empty_flush_skipped(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_empty_flush_skipped(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     tokens = ["I", " am", " good", ".", " "]
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream(tokens)))
     )
     assert len(chunks) == 1
-    mock_adapter.synthesize.assert_called_once_with("I am good.")
+    assert adapter.calls == ["I am good."]
 
 
-def test_empty_stream(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_empty_stream(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream([])))
     )
     assert len(chunks) == 0
-    mock_adapter.synthesize.assert_not_called()
+    assert adapter.calls == []
 
 
-def test_single_word_flushed(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_single_word_flushed(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     tokens = ["Hello"]
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream(tokens)))
     )
     assert len(chunks) == 1
-    mock_adapter.synthesize.assert_called_once_with("Hello")
+    assert adapter.calls == ["Hello"]
 
 
-def test_yields_numpy_arrays(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_yields_numpy_arrays(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     tokens = ["I", " am", " good", ".", " "]
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream(tokens)))
@@ -99,11 +114,11 @@ def test_yields_numpy_arrays(mock_adapter, chunker):
         assert chunk.dtype == np.float32
 
 
-def test_hello_how_are_you(mock_adapter, chunker):
-    tts = StreamingTTS(mock_adapter, chunker)
+def test_hello_how_are_you(adapter, chunker):
+    tts = StreamingTTS(adapter, chunker)
     tokens = ["Hello", ".", " How", " are", " you", "?", " "]
     chunks = asyncio.get_event_loop().run_until_complete(
         collect_chunks(tts.stream(make_token_stream(tokens)))
     )
     assert len(chunks) == 1
-    mock_adapter.synthesize.assert_called_once_with("Hello. How are you?")
+    assert adapter.calls == ["Hello. How are you?"]
