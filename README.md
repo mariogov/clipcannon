@@ -8,7 +8,7 @@
 [![License: BSL 1.1](https://img.shields.io/badge/license-BSL_1.1-orange.svg?style=flat-square)](LICENSE)
 [![MCP Protocol](https://img.shields.io/badge/MCP-compatible-purple.svg?style=flat-square)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/badge/tests-994_passing-brightgreen.svg?style=flat-square)](#testing)
-[![Tools](https://img.shields.io/badge/MCP_tools-54-orange.svg?style=flat-square)](#mcp-tools)
+[![Tools](https://img.shields.io/badge/MCP_tools-58-orange.svg?style=flat-square)](#mcp-tools)
 
 ---
 
@@ -28,7 +28,7 @@ ClipCannon ingests a video, runs it through a **23-stage AI analysis pipeline**,
 
 ## What is ClipCannon?
 
-ClipCannon is an MCP server that turns any AI assistant into a professional video editor + voice clone + meeting avatar. You give it a video file; it analyzes every frame, every word, every emotion, every speaker, every scene -- then exposes **54 tools** that let an AI assistant create edits, render platform-ready clips, generate music, clone voices, and even join Google Meet as a talking AI avatar.
+ClipCannon is an MCP server that turns any AI assistant into a professional video editor + voice clone + meeting avatar. You give it a video file; it analyzes every frame, every word, every emotion, every speaker, every scene -- then exposes **58 tools** that let an AI assistant create edits, render platform-ready clips, generate music, clone voices, and even join Google Meet as a talking AI avatar.
 
 **The core idea**: instead of scrubbing through hours of footage manually, let an AI understand the content through neural embeddings and structured analysis, then have a conversation about what to create.
 
@@ -351,7 +351,7 @@ It should:
 ## Features
 
 - **23-Stage Analysis Pipeline** -- Transcription, scene detection, emotion analysis, speaker diarization, narrative structure, prosody analysis, beat tracking, OCR, quality scoring, and more. All running as a parallelized DAG.
-- **5 Embedding Spaces** -- Visual (SigLIP 1152-dim), semantic (Nomic 768-dim), emotion (Wav2Vec2 1024-dim), speaker (WavLM 512-dim), and voice identity (ECAPA-TDNN 2048-dim) stored in sqlite-vec for KNN search.
+- **7-Instrument Frozen-Embedder Panel** -- the architecture's measurement basis (see the Calculus-of-Association paper, N=7): visual (SigLIP 1152-dim), semantic (Nomic 768-dim), emotion (wav2vec2 dimensional-SER 1024-dim), speaker (WavLM 512-dim), prosody (12-dim), sentiment (MiniLM 384-dim), and voice identity (ECAPA-TDNN). Five are persisted as sqlite-vec KNN spaces; voice identity lives in the separate voice-profiles DB.
 - **Smart Editing** -- Declarative EDL architecture with adaptive captions, face-tracking crop, split-screen, PIP, canvas compositing, motion effects, overlays, and iterative version control.
 - **7 Platform Profiles** -- One-click rendering for TikTok, Instagram Reels, YouTube Shorts, YouTube Standard, YouTube 4K, Facebook, and LinkedIn with NVENC GPU acceleration.
 - **AI Audio** -- Text-to-music via ACE-Step diffusion, 6 MIDI presets with FluidSynth, 9 DSP sound effects, speech-aware mixing with automatic ducking.
@@ -369,22 +369,25 @@ It should:
 
 ## MCP Tools
 
-54 tools organized into 12 categories:
+58 tools organized into 13 categories (counts authoritative via `scripts/count_artifacts.py`):
 
 | Category | Count | Key Tools |
 |----------|-------|-----------|
 | **Project** | 5 | `create`, `open`, `list`, `status`, `delete` |
 | **Understanding** | 4 | `ingest`, `get_transcript`, `get_frame`, `search_content` |
-| **Discovery** | 5 | `find_best_moments`, `find_cut_points`, `get_narrative_flow`, `find_safe_cuts`, `get_scene_map` |
+| **Discovery** | 4 | `find_best_moments`, `find_cut_points`, `get_narrative_flow`, `find_safe_cuts` |
 | **Editing** | 11 | `create_edit`, `modify_edit`, `auto_trim`, `color_adjust`, `add_motion`, `add_overlay`, `apply_feedback`, `branch_edit`, `edit_history`, `revert_edit`, `list_branches` |
-| **Rendering** | 6 | `render`, `preview_clip`, `preview_segment`, `preview_layout`, `inspect_render`, `analyze_frame` |
-| **Context** | 2 | `get_editing_context`, `get_scene_map` |
-| **Audio** | 5 | `generate_music`, `compose_music`, `compose_midi`, `generate_sfx`, `audio_cleanup`, `auto_music` |
+| **Rendering** | 8 | `render`, `preview_clip`, `preview_segment`, `preview_layout`, `inspect_render`, `analyze_frame`, `get_editing_context`, `get_scene_map` |
+| **Audio** | 6 | `generate_music`, `compose_music`, `compose_midi`, `generate_sfx`, `audio_cleanup`, `auto_music` |
 | **Voice** | 4 | `prepare_voice_data`, `voice_profiles`, `speak`, `speak_optimized` |
-| **Avatar** | 3 | `lip_sync`, `extract_webcam`, `generate_video` |
+| **Avatar** | 2 | `lip_sync`, `extract_webcam` |
+| **Video generation** | 1 | `generate_video` |
+| **Constellation** | 4 | `clone_video`, `expression_sequence`, `list_constellations`, `list_skills` |
 | **Billing** | 4 | `credits_balance`, `credits_history`, `credits_estimate`, `spending_limit` |
 | **Disk** | 2 | `disk_status`, `disk_cleanup` |
 | **Config** | 3 | `config_get`, `config_set`, `config_list` |
+
+(Provenance tools are internal-only — not exposed via MCP. See #54.)
 
 ---
 
@@ -398,7 +401,7 @@ It should:
                              | MCP Protocol (stdio)
                     +--------v--------+
                     |  ClipCannon     |
-                    |  MCP Server     |  54 tools
+                    |  MCP Server     |  58 tools
                     +--------+--------+
                              |
           +------------------+------------------+
@@ -568,7 +571,7 @@ ruff check src/
 - [White Paper](docs/clipcannon_whitepaper.md) -- Full technical paper
 - [System Overview](docs/codestate/01_system_overview.md) -- High-level architecture
 - [Source Code Map](docs/codestate/02_source_code_map.md) -- Complete file tree
-- [Pipeline Stages](docs/codestate/06_pipeline_stages.md) -- All 22 stages
+- [Pipeline Stages](docs/codestate/06_pipeline_stages.md) -- All 23 stages
 - [Database Schema](docs/codestate/04_database_schema.md) -- Full table definitions
 - [Editing Engine](docs/codestate/13_editing_engine.md) -- EDL models, captions
 - [Rendering Engine](docs/codestate/14_rendering_engine.md) -- FFmpeg pipeline
