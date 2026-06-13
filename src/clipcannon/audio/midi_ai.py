@@ -18,13 +18,14 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 
+from clipcannon.paths import hf_snapshot_dir
+
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = (
-    "/home/cabdru/.clipcannon/models/qwen3-8b-hf/"
-    "models--Qwen--Qwen3-8B/snapshots/"
-    "b968826d9c46dd6066d109eabc6255188de91218"
-)
+# Resolved from the HF cache (refs/main), not a hardcoded path/pinned hash.
+# required=False: a missing model surfaces via the isdir() check in the worker
+# path rather than breaking import; the model is never downloaded at runtime.
+MODEL_DIR = str(hf_snapshot_dir("Qwen/Qwen3-8B", required=False))
 
 
 @dataclass

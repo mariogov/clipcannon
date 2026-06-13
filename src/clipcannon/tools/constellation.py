@@ -136,8 +136,17 @@ async def _handle_generate_video(arguments: dict) -> dict:
         demos_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(demos_dir / f"{person}_{constellation}_{seed}.mp4")
 
-    # Build inference command
-    echomimic_dir = "/home/cabdru/echomimic_v3"
+    # Build inference command. EchoMimicV3 install dir is resolved from
+    # CLIPCANNON_ECHOMIMIC_DIR (default ~/echomimic_v3); fails loud if missing.
+    from clipcannon.paths import resolve_external_dir
+
+    echomimic_dir = str(
+        resolve_external_dir(
+            "CLIPCANNON_ECHOMIMIC_DIR",
+            Path.home() / "echomimic_v3",
+            must_contain=("infer_flash.py",),
+        )
+    )
     cmd = [
         "python", f"{echomimic_dir}/infer_flash.py",
         "--image_path", ref_path,

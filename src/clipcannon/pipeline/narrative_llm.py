@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from clipcannon.paths import hf_snapshot_dir
 from clipcannon.pipeline.orchestrator import StageResult
 from clipcannon.provenance import (
     ExecutionInfo,
@@ -38,7 +39,10 @@ logger = logging.getLogger(__name__)
 
 OPERATION = "narrative_analysis"
 STAGE = "qwen3_8b"
-MODEL_DIR = "/home/cabdru/.clipcannon/models/qwen3-8b-hf/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218"
+# Resolved from the HF cache (refs/main), not a hardcoded path/pinned hash.
+# required=False so import never fails; the existing isdir check (below) raises
+# with the resolved path when the model is absent. No runtime downloads.
+MODEL_DIR = str(hf_snapshot_dir("Qwen/Qwen3-8B", required=False))
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS narrative_analysis (

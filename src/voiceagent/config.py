@@ -16,13 +16,21 @@ from voiceagent.errors import ConfigError
 logger = logging.getLogger(__name__)
 
 
+def _default_llm_model_path() -> str:
+    """Resolve the Qwen3-14B-FP8 snapshot from the HF cache (no hardcoded path).
+
+    Resolved lazily at instantiation (not import) via refs/main; required=False
+    so a missing model surfaces at load time rather than here. No runtime
+    downloads.
+    """
+    from clipcannon.paths import hf_snapshot_dir
+
+    return str(hf_snapshot_dir("Qwen/Qwen3-14B-FP8", required=False))
+
+
 @dataclass(frozen=True)
 class LLMConfig:
-    model_path: str = (
-        "/home/cabdru/.cache/huggingface/hub/"
-        "models--Qwen--Qwen3-14B-FP8/snapshots/"
-        "9a283b4a5efbc09ce247e0ae5b02b744739e525a/"
-    )
+    model_path: str = field(default_factory=_default_llm_model_path)
     quantization: str = "fp8"
     gpu_memory_utilization: float = 0.45
     max_model_len: int = 32768
