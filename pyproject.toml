@@ -100,3 +100,6 @@ ignore = []
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
+markers = [
+    "integration: requires real models/GPU/audio; skips cleanly if unavailable (never false-passes)",
+]
