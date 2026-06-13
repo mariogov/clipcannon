@@ -22,6 +22,7 @@ No mocks. No fallbacks.
 from __future__ import annotations
 
 import struct
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -206,3 +207,76 @@ def _build_probe(model_id: str):
     from transformers import Wav2Vec2Processor
 
     return Wav2Vec2Processor.from_pretrained(model_id, local_files_only=True)
+
+
+@pytest.mark.integration
+def test_grounded_model_on_real_speech_writes_to_db(tmp_path):
+    """End-to-end GPU FSV: real speech -> SER model -> emotion_curve + vec_emotion.
+
+    Trigger: a real WAV of human speech. Process: dimensional-SER on the 5090.
+    Outcome: per-window valence/arousal/energy rows + 1024-d embeddings PERSISTED
+    and read back from the real DB. Proves the instrument is alive and grounded
+    on real data (not just synthetic tones).
+    """
+    import glob
+
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from clipcannon.pipeline.emotion_embed import (
+        MODEL_ID,
+        _compute_emotion_model,
+        _load_audio,
+        _segment_audio,
+    )
+
+    wavs = sorted(glob.glob(str(Path.home() / ".clipcannon/voice_data/*/wavs/*.wav")))
+    wavs = [w for w in wavs if "_trimmed" not in w]
+    if not wavs:
+        pytest.skip("no real speech wavs under ~/.clipcannon/voice_data")
+    try:
+        _build_probe(MODEL_ID)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"SER model '{MODEL_ID}' not pre-cached: {exc}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # Concatenate a few real clips so we get >=3 windows of real speech.
+    import numpy as np
+
+    chunks = []
+    for w in wavs[:4]:
+        audio, sr = _load_audio(Path(w))
+        chunks.append(audio)
+    audio = np.concatenate(chunks)
+    segments = _segment_audio(audio, 16000)
+    assert len(segments) >= 3, f"need >=3 windows, got {len(segments)}"
+
+    results = _compute_emotion_model(segments, device)
+
+    db = create_project_db(PROJECT_ID, base_dir=tmp_path)
+    _seed_project(db)
+    counts = _insert_results(db, PROJECT_ID, results)
+
+    # --- INSPECT THE SOURCE OF TRUTH ---
+    conn = get_connection(db, enable_vec=True, dict_rows=False)
+    try:
+        rows = conn.execute(
+            "SELECT start_ms, arousal, valence, energy FROM emotion_curve ORDER BY start_ms"
+        ).fetchall()
+        print("\n[FSV] REAL SPEECH emotion_curve (from the 5090):")
+        for r in rows:
+            print(f"   t={r[0]}ms arousal={r[1]} valence={r[2]} energy={r[3]}")
+        vrows = conn.execute("SELECT emotion_embedding FROM vec_emotion").fetchall()
+    finally:
+        conn.close()
+
+    assert counts["emotion_curve"] == len(results) == counts["vec_emotion"]
+    valences = [r[2] for r in rows]
+    # Grounded signal on real speech: valence varies window-to-window and sits in range.
+    assert len(set(valences)) > 1, f"valence constant on real speech: {valences}"
+    assert all(0.0 <= v <= 1.0 for v in valences)
+    # Every embedding is a real, non-zero 1024-d vector.
+    for blob in vrows:
+        vec = np.array(struct.unpack("<1024f", blob[0]), dtype=np.float32)
+        assert vec.shape[0] == 1024 and np.any(vec)
+    print(f"[FSV] real-speech valence range: {min(valences)}..{max(valences)} across {len(valences)} windows ✓")

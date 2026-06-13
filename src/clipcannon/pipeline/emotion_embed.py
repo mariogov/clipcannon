@@ -193,7 +193,9 @@ def _build_emotion_model_class() -> tuple:
             self.config = config
             self.wav2vec2 = Wav2Vec2Model(config)
             self.classifier = RegressionHead(config)
-            self.init_weights()
+            # transformers 5.x: post_init() (not the legacy init_weights()) wires
+            # up tied-weight bookkeeping (all_tied_weights_keys) + weight init.
+            self.post_init()
 
         def forward(self, input_values: object) -> tuple:
             outputs = self.wav2vec2(input_values)
