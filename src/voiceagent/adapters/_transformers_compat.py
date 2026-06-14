@@ -53,7 +53,7 @@ def patch_check_model_inputs() -> None:
         _PATCHED = True
         return
 
-    def _compat(func=None, *args, **kwargs):  # noqa: ANN001, ANN202
+    def _compat(func=None, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
         # 5.x bare usage: @check_model_inputs  -> func is the decorated callable
         if callable(func) and not args and not kwargs:
             return orig(func)
@@ -129,7 +129,7 @@ def patch_default_rope() -> None:
 
     import torch
 
-    def _compute_default_rope_parameters(config, device=None, seq_len=None, **kwargs):  # noqa: ANN001, ANN202, ARG001
+    def _compute_default_rope_parameters(config, device=None, seq_len=None, **kwargs):  # noqa: ANN001, ANN003, ANN202, ARG001
         base = getattr(config, "rope_theta", 10000.0)
         partial = getattr(config, "partial_rotary_factor", 1.0)
         head_dim = getattr(
