@@ -259,6 +259,12 @@ class FastTTSAdapter:
         if self._engine is not None:
             return self._engine
 
+        # Make transformers 5.x accept qwen_tts's 4.x decorator style BEFORE the
+        # engine (which imports qwen_tts) is loaded. See _transformers_compat.
+        from voiceagent.adapters._transformers_compat import patch_all
+
+        patch_all()
+
         try:
             from faster_qwen3_tts import FasterQwen3TTS
         except ImportError as e:
