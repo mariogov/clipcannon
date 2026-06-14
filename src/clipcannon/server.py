@@ -185,14 +185,27 @@ def _start_wake_listener() -> "subprocess.Popen[bytes] | None":
     """
     from pathlib import Path
 
+    from clipcannon.paths import resolve_ml_python
+
     log_dir = Path.home() / ".clipcannon"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "wake_listener.log"
 
+    # The MCP server runs in a torch-less venv, but the wake listener needs torch
+    # (Silero VAD). Launch it with the resolved torch-capable ML interpreter, not
+    # sys.executable — otherwise it auto-starts and immediately crashes with
+    # "ModuleNotFoundError: No module named 'torch'" and "Hey Jarvis" never works.
+    ml_python = resolve_ml_python()
+    if ml_python == sys.executable:
+        logger.warning(
+            "Wake listener: no torch-capable interpreter found (set "
+            "CLIPCANNON_ML_PYTHON); it will fail to load Silero VAD."
+        )
+
     try:
         fh = open(log_file, "a")  # noqa: SIM115
         proc = subprocess.Popen(
-            [sys.executable, "-m", "voiceagent", "listen", "--voice", "boris"],
+            [ml_python, "-m", "voiceagent", "listen", "--voice", "boris"],
             stdout=fh,
             stderr=fh,
             start_new_session=True,  # Detach from parent's terminal signals

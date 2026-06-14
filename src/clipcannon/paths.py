@@ -132,3 +132,63 @@ def resolve_external_dir(
                 f"like the expected installation. Set {env_var} correctly."
             )
     return d
+
+
+def resolve_ml_python() -> str:
+    """Resolve a torch-capable Python interpreter for ML subprocesses.
+
+    The MCP server runs in a lightweight venv WITHOUT torch; ML subprocesses
+    (e.g. the wake listener's Silero VAD) need the torch-capable interpreter.
+    Resolution order (portable, no hardcoded user path):
+
+      1. ``CLIPCANNON_ML_PYTHON`` env override,
+      2. the running interpreter if it already has torch,
+      3. common conda/mamba base interpreters,
+      4. fall back to ``sys.executable`` (caller should verify torch).
+    """
+    import shutil
+    import sys
+
+    env = os.environ.get("CLIPCANNON_ML_PYTHON")
+    if env:
+        p = Path(env).expanduser()
+        if p.exists():
+            return str(p)
+
+    if _interpreter_has_torch(sys.executable):
+        return sys.executable
+
+    home = Path.home()
+    candidates = [
+        home / "miniconda3" / "bin" / "python3",
+        home / "anaconda3" / "bin" / "python3",
+        home / "miniforge3" / "bin" / "python3",
+        home / "mambaforge" / "bin" / "python3",
+    ]
+    conda_exe = shutil.which("python3")
+    if conda_exe:
+        candidates.append(Path(conda_exe))
+    for c in candidates:
+        if c.exists() and _interpreter_has_torch(str(c)):
+            return str(c)
+
+    return sys.executable
+
+
+def _interpreter_has_torch(python_exe: str) -> bool:
+    """True iff `python_exe` can import torch (cached per-process)."""
+    import subprocess
+
+    cache = _interpreter_has_torch.__dict__.setdefault("_cache", {})
+    if python_exe in cache:
+        return cache[python_exe]
+    try:
+        rc = subprocess.run(
+            [python_exe, "-c", "import torch"],
+            capture_output=True, timeout=60,
+        ).returncode
+        ok = rc == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    cache[python_exe] = ok
+    return ok
