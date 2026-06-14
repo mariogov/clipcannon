@@ -67,11 +67,18 @@ async def _run_ffmpeg_frames_gpu(
     Returns:
         Tuple of (success, stderr_output).
     """
+    # Issue #48: pick a colour-correct decode route. 4:2:2/10-bit sources use the
+    # NVDEC 4:2:2 path when the ffmpeg build supports it, else a colour-preserving
+    # software decode — instead of a blanket -hwaccel cuda that can silently
+    # subsample 4:2:2 chroma to 4:2:0.
+    from clipcannon.pipeline.chroma import decode_input_args
+
+    decode_args, reason = decode_input_args(source_path)
+    logger.info("frame_extract decode route: %s", reason)
     cmd = [
         "ffmpeg",
         "-y",
-        "-hwaccel",
-        "cuda",
+        *decode_args,
         "-i",
         str(source_path),
         "-vf",
